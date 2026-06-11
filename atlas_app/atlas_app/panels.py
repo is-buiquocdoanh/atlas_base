@@ -181,7 +181,12 @@ class NaviModePanel(QWidget):
         ml.layout().addWidget(self._map_lbl)
         hm = QHBoxLayout()
         self._restart_btn = QPushButton('↺ Restart Nav')
-        self._stop_nav_btn = _btn('⬛ Stop Nav', '#c04444')
+        self._stop_nav_btn = QPushButton('⬛ Stop Nav')
+        self._stop_nav_btn.setStyleSheet(
+            'QPushButton{background:#c04444;color:#fff;font-weight:bold;'
+            'border:none;border-radius:4px;padding:5px 10px;}'
+            'QPushButton:hover{background:#e05555;border:1px solid #ff7777;}'
+            'QPushButton:pressed{background:#a03030;}')
         hm.addWidget(self._restart_btn); hm.addWidget(self._stop_nav_btn)
         ml.layout().addLayout(hm)
         lay.addWidget(ml)
@@ -1166,26 +1171,93 @@ class SpecialAreaPanel(QWidget):
 # 7. Map Panel                                                               #
 # ══════════════════════════════════════════════════════════════════════════ #
 
+class _MapCard(QWidget):
+    """Card widget hiển thị thông tin 1 map trong danh sách."""
+    def __init__(self, entry: dict):
+        super().__init__()
+        self.setAutoFillBackground(False)
+        self.setStyleSheet('background: transparent;')
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(10)
+
+        # Thumbnail
+        self._thumb_lbl = QLabel('…')
+        self._thumb_lbl.setFixedSize(88, 66)
+        self._thumb_lbl.setAlignment(Qt.AlignCenter)
+        self._thumb_lbl.setStyleSheet(
+            'background:#1a1a2e; border:1px solid #333; color:#666; font-size:18px;')
+        lay.addWidget(self._thumb_lbl)
+
+        # Info
+        info = QVBoxLayout()
+        info.setSpacing(2)
+        info.setContentsMargins(0, 0, 0, 0)
+
+        alias = entry.get('alias') or entry.get('name', '?')
+        name_lbl = QLabel(alias)
+        font = QFont(); font.setBold(True); font.setPointSize(11)
+        name_lbl.setFont(font)
+        info.addWidget(name_lbl)
+
+        # Ngày tạo
+        created = entry.get('created_at', '')
+        if created:
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                dt_local = dt.astimezone()
+                date_str = dt_local.strftime('%Y-%m-%d  %H:%M')
+            except Exception:
+                date_str = created[:16]
+            info.addWidget(_lbl(f'  {date_str}'))
+
+        # Kích thước
+        w   = entry.get('width',  0)
+        h   = entry.get('height', 0)
+        res = entry.get('resolution', 0.0)
+        kb  = entry.get('size_kb', 0)
+        parts = []
+        if w and h:
+            parts.append(f'{w} x {h} px')
+        if res:
+            parts.append(f'{res:.3f} m/px')
+        if kb:
+            parts.append(f'{kb/1024:.1f} MB' if kb >= 1024 else f'{kb} KB')
+        if parts:
+            info.addWidget(_lbl('  ' + '   |   '.join(parts)))
+
+        info.addStretch()
+        lay.addLayout(info, 1)
+
+    def set_thumbnail(self, pix: QPixmap):
+        self._thumb_lbl.setPixmap(
+            pix.scaled(88, 66, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._thumb_lbl.setText('')
+
+
 class MapPanel(QWidget):
+    _thumb_ready = pyqtSignal(int, bytes)   # row, png_data — thread-safe delivery
+
     def __init__(self, win):
         super().__init__()
         self._win = win
-        self._map_entries: list = []   # list of {name, alias, ...} from API
+        self._map_entries: list = []
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(6)
 
         hd = QHBoxLayout()
-        self._ref_btn  = QPushButton('↺ Refresh')
-        self._ref_btn.clicked.connect(self._refresh)
         hd.addWidget(QLabel('Maps on robot:'))
         hd.addStretch()
-        hd.addWidget(self._ref_btn)
+        ref_btn = QPushButton('↺ Refresh')
+        ref_btn.clicked.connect(self._refresh)
+        hd.addWidget(ref_btn)
         lay.addLayout(hd)
 
         self._list = QListWidget()
-        self._list.setIconSize(QSize(80, 60))
         self._list.setSpacing(2)
+        self._list.setUniformItemSizes(False)
         lay.addWidget(self._list, 1)
 
         h = QHBoxLayout()
@@ -1199,6 +1271,7 @@ class MapPanel(QWidget):
 
         self._apply_btn.clicked.connect(self._apply_map)
         self._delete_btn.clicked.connect(self._delete_map)
+        self._thumb_ready.connect(self._apply_thumb)
 
         self._refresh()
 
@@ -1218,39 +1291,38 @@ class MapPanel(QWidget):
     @pyqtSlot()
     def _populate_list(self):
         self._list.clear()
-        self._status.setText(f'{len(self._map_entries)} maps found')
-        for entry in self._map_entries:
-            alias = entry.get('alias') or entry.get('name', '?')
-            item = QListWidgetItem(alias)
-            item.setData(Qt.UserRole, entry)
-            self._list.addItem(item)
-
-        # load thumbnails in background
+        n = len(self._map_entries)
+        self._status.setText(f'{n} map{"s" if n != 1 else ""}')
         for i, entry in enumerate(self._map_entries):
-            name = entry.get('name', '')
+            card = _MapCard(entry)
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, entry)
+            item.setSizeHint(card.sizeHint())
+            self._list.addItem(item)
+            self._list.setItemWidget(item, card)
             threading.Thread(
-                target=self._load_thumb, args=(i, name), daemon=True).start()
+                target=self._load_thumb, args=(i, entry.get('name', '')),
+                daemon=True).start()
 
     def _load_thumb(self, row: int, name: str):
         data = self._win.api.get_thumbnail(name)
         if data:
-            from PyQt5.QtCore import QMetaObject, Qt as Qt2
-            self._pending_thumb = (row, data)
-            QMetaObject.invokeMethod(self, '_apply_thumb', Qt2.QueuedConnection)
+            self._thumb_ready.emit(row, data)   # signal → main thread
 
-    @pyqtSlot()
-    def _apply_thumb(self):
-        if not hasattr(self, '_pending_thumb'):
-            return
-        row, data = self._pending_thumb
+    @pyqtSlot(int, bytes)
+    def _apply_thumb(self, row: int, data: bytes):
         if row >= self._list.count():
+            return
+        item = self._list.item(row)
+        if item is None:
+            return
+        card = self._list.itemWidget(item)
+        if not isinstance(card, _MapCard):
             return
         pix = QPixmap()
         pix.loadFromData(data)
         if not pix.isNull():
-            from PyQt5.QtGui import QIcon
-            self._list.item(row).setIcon(
-                QIcon(pix.scaled(80, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+            card.set_thumbnail(pix)
 
     def _apply_map(self):
         item = self._list.currentItem()
@@ -1262,7 +1334,7 @@ class MapPanel(QWidget):
 
         def _cb(r):
             ok = r and r.get('status') == 'success'
-            self._status.setText(f'✓ Applied: {name}' if ok else '✗ Apply failed')
+            self._status.setText(f'Applied: {name}' if ok else 'Apply failed')
             self._status.setStyleSheet(
                 f'color:{"#60c060" if ok else "#e05555"};font-size:11px;')
         self._win.api.post_async('/atlas/map/apply', {'name': name}, _cb)
@@ -1277,7 +1349,7 @@ class MapPanel(QWidget):
         def _cb(r):
             if r and r.get('status') == 'success':
                 self._refresh()
-        self._win.api.post_async(f'/atlas/map/{name}', None, _cb)
+        self._win.api.delete_async(f'/atlas/map/{name}', _cb)
 
     def refresh(self, _node):
         pass
@@ -1482,12 +1554,15 @@ class SettingsPanel(QWidget):
             'aruco: ArUco marker docking (future)', '#888'))
         lay.addWidget(dcg)
 
-        # storage
+        # storage — read-only, auto-resolved at startup, không lưu vào settings
         dg = _grp('Storage')
         dfl = QFormLayout(); dfl.setSpacing(6)
-        from .node import _MAPS_DIR as _default_maps_dir
-        self._maps_dir = QLineEdit(s.get('maps_dir', _default_maps_dir))
-        dfl.addRow('Local maps dir:', self._maps_dir)
+        from .node import _MAPS_DIR as _resolved_maps_dir
+        self._maps_dir = QLineEdit(_resolved_maps_dir)
+        self._maps_dir.setReadOnly(True)
+        self._maps_dir.setStyleSheet('color: #888; background: #1a1a2e;')
+        self._maps_dir.setToolTip('Đường dẫn tự động theo workspace, không cần chỉnh tay')
+        dfl.addRow('Maps dir:', self._maps_dir)
         dg.layout().addLayout(dfl)
         lay.addWidget(dg)
 
@@ -1532,7 +1607,6 @@ class SettingsPanel(QWidget):
         s['inflation_radius']   = self._infl.value()
         s['xy_tolerance']       = self._xy_tol.value()
         s['yaw_tolerance']      = self._y_tol.value()
-        s['maps_dir']           = self._maps_dir.text()
         s['charging_pile']      = self._charging_pile.text().strip() or 'charging_pile'
         s['dock_method']        = self._dock_method.currentText()
         self._win.node.config.save_settings()

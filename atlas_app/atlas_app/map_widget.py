@@ -44,6 +44,7 @@ class MapWidget(QWidget):
     MODE_SET_POSE = 'set_pose'
     MODE_WALL     = 'wall'
     MODE_POLYGON  = 'polygon'
+    MODE_MEASURE  = 'measure'
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -81,6 +82,11 @@ class MapWidget(QWidget):
         self._pose_anchor     = None   # (wx, wy) click point for initial drag
         self._pose_drag_mode  = None   # 'initial_yaw' | 'move' | 'yaw'
 
+        # MEASURE state
+        self._measure_start: tuple = None   # (wx, wy) first click
+        self._measure_end:   tuple = None   # (wx, wy) second click or live mouse
+        self._measure_fixed: bool  = False  # True after second click (frozen)
+
         # launch process status (updated from main window)
         self._launch_status: dict = {'slam': False, 'map_server': False, 'nav': False}
 
@@ -100,12 +106,16 @@ class MapWidget(QWidget):
         self._pose_anchor     = None
         self._pose_drag_mode  = None
         self._mouse_down_world = None
+        self._measure_start   = None
+        self._measure_end     = None
+        self._measure_fixed   = False
         cursors = {
             self.MODE_DRAG:     Qt.OpenHandCursor,
             self.MODE_NAV_GOAL: Qt.CrossCursor,
             self.MODE_SET_POSE: Qt.CrossCursor,
             self.MODE_WALL:     Qt.CrossCursor,
             self.MODE_POLYGON:  Qt.CrossCursor,
+            self.MODE_MEASURE:  Qt.CrossCursor,
         }
         self.setCursor(cursors.get(mode, Qt.ArrowCursor))
         self.update()
@@ -221,6 +231,7 @@ class MapWidget(QWidget):
         self._draw_goal_marker(p)
         self._draw_pose_preview(p)
         self._draw_poly_in_progress(p)
+        self._draw_measure(p)
         self._draw_legend(p)
         self._draw_launch_status(p)
 
@@ -378,6 +389,44 @@ class MapWidget(QWidget):
             p.setPen(QPen(QColor(210, 210, 210) if running else QColor(120, 120, 120)))
             p.drawText(x0 + 22, y + 14, label)
 
+    def _draw_measure(self, p):
+        if self._measure_start is None or self._measure_end is None:
+            if self._measure_start is not None:
+                # Show start dot only
+                ca = self._w2c(*self._measure_start)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor(255, 220, 0)))
+                p.drawEllipse(ca, 5, 5)
+            return
+
+        ax, ay = self._measure_start
+        bx, by = self._measure_end
+        ca = self._w2c(ax, ay)
+        cb = self._w2c(bx, by)
+        dist = math.hypot(bx - ax, by - ay)
+
+        line_color = QColor(255, 220, 0) if self._measure_fixed else QColor(255, 220, 0, 200)
+        pen = QPen(line_color, 2, Qt.SolidLine if self._measure_fixed else Qt.DashLine)
+        if not self._measure_fixed:
+            pen.setDashPattern([8, 4])
+        p.setPen(pen)
+        p.drawLine(ca.toPoint(), cb.toPoint())
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(QColor(255, 220, 0)))
+        p.drawEllipse(ca, 5, 5)
+        p.drawEllipse(cb, 5, 5)
+
+        mid = QPointF((ca.x() + cb.x()) / 2, (ca.y() + cb.y()) / 2)
+        text = f'{dist:.2f} m'
+        p.setFont(QFont('Sans', 10, QFont.Bold))
+        tx, ty = mid.x() + 10, mid.y() - 4
+        p.setPen(QPen(QColor(0, 0, 0, 200)))
+        for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            p.drawText(QPointF(tx + dx, ty + dy), text)
+        p.setPen(QPen(QColor(255, 240, 100)))
+        p.drawText(QPointF(tx, ty), text)
+
     def _draw_pose_preview(self, p):
         # ── NAV_GOAL simple arrow ─────────────────────────────────────────
         if self._mode == self.MODE_NAV_GOAL and self._mouse_down_world:
@@ -529,8 +578,22 @@ class MapWidget(QWidget):
             elif self._mode in (self.MODE_WALL, self.MODE_POLYGON):
                 self._drawing_poly.append((wx, wy))
                 self.update()
+            elif self._mode == self.MODE_MEASURE:
+                if self._measure_start is None or self._measure_fixed:
+                    self._measure_start = (wx, wy)
+                    self._measure_end   = None
+                    self._measure_fixed = False
+                else:
+                    self._measure_end   = (wx, wy)
+                    self._measure_fixed = True
+                self.update()
         elif event.button() == Qt.RightButton:
-            if self._mode in (self.MODE_WALL, self.MODE_POLYGON):
+            if self._mode == self.MODE_MEASURE:
+                self._measure_start = None
+                self._measure_end   = None
+                self._measure_fixed = False
+                self.update()
+            elif self._mode in (self.MODE_WALL, self.MODE_POLYGON):
                 self._cancel_poly()
 
     def _start_pose_interaction(self, cx, cy, wx, wy):
@@ -647,6 +710,10 @@ class MapWidget(QWidget):
             self.update()
         elif self._mode in (self.MODE_WALL, self.MODE_POLYGON):
             self.update()
+        elif self._mode == self.MODE_MEASURE:
+            if self._measure_start is not None and not self._measure_fixed:
+                self._measure_end = (wx, wy)
+            self.update()
 
     def wheelEvent(self, event):
         f = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
@@ -660,5 +727,10 @@ class MapWidget(QWidget):
         if event.key() == Qt.Key_Escape:
             if self._mode in (self.MODE_WALL, self.MODE_POLYGON):
                 self._cancel_poly()
+            elif self._mode == self.MODE_MEASURE:
+                self._measure_start = None
+                self._measure_end   = None
+                self._measure_fixed = False
+                self.update()
             else:
                 self.update()

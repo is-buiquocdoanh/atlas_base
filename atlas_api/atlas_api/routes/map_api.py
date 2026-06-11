@@ -28,9 +28,16 @@ def _resolve_maps_dir() -> str:
         from ament_index_python.packages import get_package_share_directory
         pkg_dir = get_package_share_directory('atlas_slam')
         ws_dir  = os.path.abspath(os.path.join(pkg_dir, '..', '..', '..', '..'))
-        d = os.path.join(ws_dir, 'src', 'atlas_maps')
-        if os.path.isdir(d):
-            return d
+        for candidate in [
+            os.path.join(ws_dir, 'src', 'atlas_base', 'atlas_maps'),
+            os.path.join(ws_dir, 'src', 'atlas_maps'),
+        ]:
+            if os.path.isdir(candidate):
+                return candidate
+        # không tìm thấy → tạo mới tại atlas_base/atlas_maps
+        d = os.path.join(ws_dir, 'src', 'atlas_base', 'atlas_maps')
+        os.makedirs(d, exist_ok=True)
+        return d
     except Exception:
         pass
     return os.path.expanduser('~/.atlas/maps')
@@ -53,33 +60,73 @@ def _safe_name(alias: str) -> str:
     return s or 'map'
 
 
+def _pgm_dims(pgm_path: str):
+    """Read width×height from PGM header without loading full image."""
+    try:
+        with open(pgm_path, 'rb') as f:
+            f.readline()           # magic (P5/P2)
+            line = f.readline()
+            while line.startswith(b'#'):
+                line = f.readline()
+            w, h = map(int, line.split())
+            return int(w), int(h)
+    except Exception:
+        return 0, 0
+
+
+def _yaml_resolution(yaml_path: str) -> float:
+    try:
+        with open(yaml_path) as f:
+            for line in f:
+                if line.startswith('resolution'):
+                    return float(line.split(':', 1)[1].strip())
+    except Exception:
+        pass
+    return 0.0
+
+
+def _map_extra(yaml_path: str) -> dict:
+    """Return width, height, resolution, size_kb for a map yaml."""
+    pgm_path = os.path.splitext(yaml_path)[0] + '.pgm'
+    w, h = _pgm_dims(pgm_path)
+    res  = _yaml_resolution(yaml_path)
+    try:
+        kb = sum(
+            os.path.getsize(os.path.join(os.path.dirname(yaml_path), f))
+            for f in os.listdir(os.path.dirname(yaml_path))
+            if os.path.isfile(os.path.join(os.path.dirname(yaml_path), f))
+        ) // 1024
+    except Exception:
+        kb = 0
+    return {'width': w, 'height': h, 'resolution': res, 'size_kb': kb}
+
+
 def _scan_maps():
     """Populate _map_store with maps already on disk (called once at startup)."""
-    # Scan subdirectory maps: atlas_maps/<dir>/<any>.yaml
-    # and flat maps:          atlas_maps/<any>.yaml
     patterns = [
         os.path.join(_MAPS_DIR, '*', '*.yaml'),
         os.path.join(_MAPS_DIR, '*.yaml'),
     ]
     seen_dirs = set()
     for yaml_path in sorted(p for pat in patterns for p in glob.glob(pat)):
-        # Determine the key: use parent dir name for subdir maps, stem for flat maps
-        parent = os.path.basename(os.path.dirname(yaml_path))
-        stem   = os.path.splitext(os.path.basename(yaml_path))[0]
+        parent    = os.path.basename(os.path.dirname(yaml_path))
+        stem      = os.path.splitext(os.path.basename(yaml_path))[0]
         is_subdir = (parent != os.path.basename(_MAPS_DIR))
-        name = parent if is_subdir else stem
+        name      = parent if is_subdir else stem
 
         if name in _map_store or name in seen_dirs:
             continue
         if is_subdir:
             seen_dirs.add(name)
 
-        _map_store[name] = {
+        entry = {
             'name':       name,
             'alias':      stem.replace('_', ' ').title(),
             'path':       yaml_path,
             'created_at': _now_iso(),
         }
+        entry.update(_map_extra(yaml_path))
+        _map_store[name] = entry
 
 
 _scan_maps()
@@ -298,12 +345,14 @@ def save_map():
         posegraph_msg = msg
 
     # ── Register in map store regardless (yaml/pgm are the minimum) ───────
-    _map_store[name] = {
+    entry = {
         'name':       name,
         'alias':      alias,
         'path':       yaml_path,
         'created_at': _now_iso(),
     }
+    entry.update(_map_extra(yaml_path))
+    _map_store[name] = entry
     _current_map.update({'name': name, 'alias': alias, 'path': yaml_path})
 
     return jsonify({

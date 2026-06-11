@@ -156,58 +156,80 @@ class AtlasAppWindow(QMainWindow):
         self.addToolBar(tb)
         tb.setStyleSheet("""
             QToolBar { background:#14141f; border-bottom:2px solid #333355;
-                       padding:3px 8px; spacing:6px; }
+                       padding:2px 6px; spacing:4px; }
             QToolButton {
                 background:#222234; color:#ccc; border:1px solid #444466;
-                border-radius:4px; padding:4px 12px; font-size:12px; min-width:76px;
+                border-radius:4px; padding:4px 10px; font-size:12px; min-width:68px;
             }
-            QToolButton:hover   { background:#4e9af1; color:#fff; border-color:#4e9af1; }
-            QToolButton:checked { background:#4e9af1; color:#fff; }
+            QToolButton:hover   { background:#3a6abf; color:#fff; border-color:#4e9af1; }
+            QToolButton:checked { background:#4e9af1; color:#fff; border-color:#6eb8ff; }
+            QToolButton:pressed { background:#2a5a9f; }
         """)
+
+        def _grp_lbl(text):
+            lbl = QLabel(text)
+            lbl.setStyleSheet(
+                'color:#44446a;font-size:9px;font-weight:bold;'
+                'letter-spacing:1px;padding:0 3px;')
+            return lbl
 
         self._mode_lbl = QLabel('Navigation Mode')
         self._mode_lbl.setStyleSheet(
-            'color:#7090d0;font-weight:bold;font-size:13px;padding:0 10px;')
+            'color:#7090d0;font-weight:bold;font-size:13px;padding:0 8px;')
         tb.addWidget(self._mode_lbl)
         tb.addSeparator()
 
-        self._act_cancel = QAction('✕ Cancel Nav', self)
+        # ── Group: CONTROL ────────────────────────────────────────────────
+        tb.addWidget(_grp_lbl('CONTROL'))
+        self._act_cancel  = QAction('Cancel Nav', self)
+        self._act_stop    = QAction('STOP', self)
+        self._act_stopall = QAction('Stop All Nodes', self)
         self._act_cancel.triggered.connect(self._cancel_nav)
-        self._act_stop = QAction('⬛ STOP', self)
         self._act_stop.triggered.connect(self._emergency_stop)
-        self._act_stopall = QAction('■ Stop All Nodes', self)
         self._act_stopall.triggered.connect(self._stop_all)
         tb.addAction(self._act_cancel)
         tb.addAction(self._act_stop)
         tb.addAction(self._act_stopall)
         tb.addSeparator()
 
+        # ── Group: CHARGING ───────────────────────────────────────────────
+        tb.addWidget(_grp_lbl('CHARGING'))
         self._act_navi_charge = QAction('Navi Charge', self)
         self._act_docking     = QAction('Docking',     self)
-        self._act_charge      = QAction('⚡ Charge',   self)
+        self._act_charge      = QAction('Charge',      self)
+        self._act_stop_dock   = QAction('Stop Dock',   self)
         tb.addAction(self._act_navi_charge)
         tb.addAction(self._act_docking)
         tb.addAction(self._act_charge)
+        tb.addAction(self._act_stop_dock)
         self._act_navi_charge.triggered.connect(self._navi_charge)
         self._act_docking.triggered.connect(self._start_docking)
         self._act_charge.triggered.connect(self._full_charge)
+        self._act_stop_dock.triggered.connect(self._stop_dock)
         tb.addSeparator()
 
-        self._act_drag = QAction('Drag',     self, checkable=True, checked=True)
-        self._act_goal = QAction('Nav Goal', self, checkable=True)
-        self._act_pose = QAction('Set Pose', self, checkable=True)
-        self._act_fit  = QAction('Fit Map',  self)
-        for a in (self._act_drag, self._act_goal, self._act_pose, self._act_fit):
+        # ── Group: MAP TOOLS ──────────────────────────────────────────────
+        tb.addWidget(_grp_lbl('MAP'))
+        self._act_drag    = QAction('Drag',     self, checkable=True, checked=True)
+        self._act_goal    = QAction('Nav Goal', self, checkable=True)
+        self._act_pose    = QAction('Set Pose', self, checkable=True)
+        self._act_measure = QAction('Measure',  self, checkable=True)
+        self._act_fit     = QAction('Fit Map',  self)
+        for a in (self._act_drag, self._act_goal, self._act_pose,
+                  self._act_measure, self._act_fit):
             tb.addAction(a)
         self._act_drag.triggered.connect(lambda: self.request_map_mode('drag'))
         self._act_goal.triggered.connect(lambda: self.request_map_mode('nav_goal'))
         self._act_pose.triggered.connect(lambda: self.request_map_mode('set_pose'))
+        self._act_measure.triggered.connect(
+            lambda checked: self.request_map_mode('measure' if checked else 'drag'))
         # fit_map connected after map_widget is created
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
 
+        # ── Status indicators ──────────────────────────────────────────────
         self._laser_dot = QLabel('● Laser')
         self._imu_dot   = QLabel('● IMU')
         self._estop_dot = QLabel('● E-stop')
@@ -352,9 +374,10 @@ class AtlasAppWindow(QMainWindow):
 
     def request_map_mode(self, mode: str):
         self.map_widget.set_mode(mode)
-        for act, m in ((self._act_drag, 'drag'),
-                       (self._act_goal, 'nav_goal'),
-                       (self._act_pose, 'set_pose')):
+        for act, m in ((self._act_drag,    'drag'),
+                       (self._act_goal,    'nav_goal'),
+                       (self._act_pose,    'set_pose'),
+                       (self._act_measure, 'measure')):
             act.setChecked(m == mode)
 
     # ------------------------------------------------------------------ #
@@ -370,12 +393,16 @@ class AtlasAppWindow(QMainWindow):
         self.request_map_mode('drag')
 
     def _on_pose_selected(self, x: float, y: float, yaw: float):
+        # If toolbar Set Pose is active, publish immediately and stay in set_pose mode
+        if self._act_pose.isChecked():
+            self._relocate_api(x, y, yaw)
+            return  # keep set_pose mode active for continuous use
+
         if isinstance(self._current_panel, NaviModePanel):
             self._current_panel.set_pose_from_map(x, y, yaw)
             self.request_map_mode('drag')
         elif isinstance(self._current_panel, PositionPanel):
             self._current_panel.on_pose_selected(x, y, yaw)
-            # Don't reset to drag — user may still adjust the temp marker
         else:
             self._relocate_api(x, y, yaw)
             self.request_map_mode('drag')
@@ -455,8 +482,12 @@ class AtlasAppWindow(QMainWindow):
                 _log(f'Charge error: {msg}')
         self.api.post_async('/atlas/nav/charge', {}, _cb)
 
+    def _stop_dock(self):
+        self.api.post_async('/atlas/nav/dock_stop')
+        self.api.post_async('/atlas/nav/cancel')
+        self.map_widget.clear_goal_marker()
+
     def _stop_all(self):
-        """Stop nav cancel + kill all local launch processes + API stop."""
         from .node import _log
         _log('Stop All requested')
         self.node.stop_all_local()
