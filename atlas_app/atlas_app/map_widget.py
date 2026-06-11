@@ -1,7 +1,7 @@
 import math
 import numpy as np
 
-from PyQt5.QtWidgets import QWidget, QLabel
+from PyQt5.QtWidgets import QWidget, QLabel, QCheckBox, QVBoxLayout
 from PyQt5.QtCore import Qt, QPoint, QPointF, pyqtSignal
 from PyQt5.QtGui import (
     QPainter, QColor, QImage, QPen, QBrush, QPolygonF, QFont,
@@ -19,17 +19,63 @@ _AREA_BORDER = {
     'fast':      QColor(50,  180, 50),
     'custom':    QColor(100, 100, 220),
 }
-_LEGEND = [
-    (QColor(30,  160, 80),       'Robot'),
-    (QColor(0,   200, 255),      'LiDAR'),
-    (QColor(255, 165, 0),        'Global path'),
-    (QColor(80,  140, 255),      'Waypoint'),
-    (QColor(220,  60, 60),       'Virtual wall'),
-    (QColor(220,  50, 50,  120), 'Forbidden'),
-    (QColor(255, 200,  0,  120), 'Slow zone'),
-    (QColor(50,  200, 50,  120), 'Fast zone'),
-    (QColor(255, 200,  0),       'Goal'),
+_LAYERS = [
+    # (key, label, default_on)
+    ('laser',     'Laser',               True),
+    ('local_cm',  'Local costmap',       False),
+    ('global_cm', 'Global costmap',      False),
+    ('waypoints', 'Waypoints',           True),
+    ('walls',     'Virtual wall',        False),
+    ('areas',     'Special area',        False),
+    ('plan',      'Path/Plan',           True),
 ]
+
+
+class _LayerPanel(QWidget):
+    """Semi-transparent layer visibility panel shown at top-right of the map."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(160)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 6, 8, 8)
+        lay.setSpacing(1)
+
+        title = QLabel('Layers')
+        title.setStyleSheet(
+            'color:#ccc;font-size:11px;font-weight:bold;background:transparent;')
+        lay.addWidget(title)
+
+        self._checks: dict = {}
+        for key, label, default in _LAYERS:
+            cb = QCheckBox(label)
+            cb.setChecked(default)
+            cb.setStyleSheet(
+                'QCheckBox{color:#ddd;font-size:11px;background:transparent;}'
+                'QCheckBox::indicator{width:12px;height:12px;}'
+                'QCheckBox::indicator:checked{background:#4e9af1;border:1px solid #4e9af1;border-radius:2px;}'
+                'QCheckBox::indicator:unchecked{background:#333;border:1px solid #555;border-radius:2px;}')
+            lay.addWidget(cb)
+            self._checks[key] = cb
+
+        for cb in self._checks.values():
+            cb.stateChanged.connect(self._on_changed)
+        self.adjustSize()
+
+    def _on_changed(self):
+        if self.parent():
+            self.parent().update()
+
+    def is_visible_layer(self, key: str) -> bool:
+        cb = self._checks.get(key)
+        return cb.isChecked() if cb else True
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor(15, 15, 30, 200))
+        p.setPen(QPen(QColor(60, 60, 100), 1))
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 6, 6)
 
 
 class MapWidget(QWidget):
@@ -87,6 +133,15 @@ class MapWidget(QWidget):
         self._measure_end:   tuple = None   # (wx, wy) second click or live mouse
         self._measure_fixed: bool  = False  # True after second click (frozen)
 
+        # Costmap / footprint data
+        self._local_costmap_img:  QImage = None
+        self._local_costmap_origin: tuple = (0.0, 0.0)
+        self._local_costmap_res:    float = 0.05
+        self._local_costmap_wh:     tuple = (0, 0)
+        self._global_costmap_img:  QImage = None
+        self._global_costmap_origin: tuple = (0.0, 0.0)
+        self._global_costmap_res:    float = 0.05
+        self._global_costmap_wh:     tuple = (0, 0)
         # launch process status (updated from main window)
         self._launch_status: dict = {'slam': False, 'map_server': False, 'nav': False}
 
@@ -94,6 +149,10 @@ class MapWidget(QWidget):
         self._coord_lbl.setStyleSheet(
             'background:rgba(0,0,0,160);color:#adf;padding:2px 6px;border-radius:3px;font-size:11px;')
         self._coord_lbl.move(8, 8)
+
+        # Layer visibility panel (top-right corner)
+        self._layer_panel = _LayerPanel(self)
+        self._position_layer_panel()
 
     # ------------------------------------------------------------------ #
     # public API                                                           #
@@ -188,6 +247,68 @@ class MapWidget(QWidget):
             self._launch_status = dict(status)
             self.update()
 
+    def update_local_costmap(self, grid):
+        if grid is None:
+            return
+        img, ox, oy, res, w, h = self._costmap_to_image(
+            grid, QColor(0, 80, 255), QColor(255, 30, 30))
+        self._local_costmap_img    = img
+        self._local_costmap_origin = (ox, oy)
+        self._local_costmap_res    = res
+        self._local_costmap_wh     = (w, h)
+        self.update()
+
+    def update_global_costmap(self, grid):
+        if grid is None:
+            return
+        img, ox, oy, res, w, h = self._costmap_to_image(
+            grid, QColor(255, 140, 0), QColor(255, 30, 30))
+        self._global_costmap_img    = img
+        self._global_costmap_origin = (ox, oy)
+        self._global_costmap_res    = res
+        self._global_costmap_wh     = (w, h)
+        self.update()
+
+    def _position_layer_panel(self):
+        pad = 6
+        self._layer_panel.adjustSize()
+        w = self.width()
+        if w > self._layer_panel.width():
+            self._layer_panel.move(w - self._layer_panel.width() - pad, pad)
+        self._layer_panel.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_layer_panel()
+
+    @staticmethod
+    def _costmap_to_image(grid, free_color: QColor, lethal_color: QColor):
+        """Convert OccupancyGrid to a semi-transparent RGBA QImage."""
+        info = grid.info
+        w, h  = info.width, info.height
+        ox    = info.origin.position.x
+        oy    = info.origin.position.y
+        res   = info.resolution
+        data  = np.array(grid.data, dtype=np.int8).reshape((h, w))
+
+        img = np.zeros((h, w, 4), dtype=np.uint8)
+        # inflated (1–99): base color with alpha proportional to cost
+        mask_inf = (data > 0) & (data < 100)
+        alpha_inf = (data[mask_inf].astype(np.float32) / 99.0 * 160).astype(np.uint8)
+        img[mask_inf, 0] = free_color.red()
+        img[mask_inf, 1] = free_color.green()
+        img[mask_inf, 2] = free_color.blue()
+        img[mask_inf, 3] = alpha_inf
+        # lethal (100): bright lethal color
+        mask_let = data == 100
+        img[mask_let] = [lethal_color.red(), lethal_color.green(),
+                         lethal_color.blue(), 200]
+        # free (0) and unknown (−1): fully transparent (already zeros)
+
+        img = np.flipud(img)
+        qimg = QImage(img.tobytes(), w, h, w * 4, QImage.Format_RGBA8888).copy()
+        return qimg, ox, oy, res, w, h
+
     def fit_map(self):
         if not self._map_w:
             return
@@ -217,22 +338,37 @@ class MapWidget(QWidget):
     # ------------------------------------------------------------------ #
 
     def paintEvent(self, _):
+        lp = self._layer_panel
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(42, 42, 42))
         self._draw_map(p)
-        self._draw_special_areas(p)
-        self._draw_virtual_walls(p)
-        self._draw_plan(p)
-        self._draw_scan(p)
+        if lp.is_visible_layer('global_cm'):
+            self._draw_costmap(p, self._global_costmap_img,
+                               self._global_costmap_origin,
+                               self._global_costmap_res,
+                               self._global_costmap_wh)
+        if lp.is_visible_layer('local_cm'):
+            self._draw_costmap(p, self._local_costmap_img,
+                               self._local_costmap_origin,
+                               self._local_costmap_res,
+                               self._local_costmap_wh)
+        if lp.is_visible_layer('areas'):
+            self._draw_special_areas(p)
+        if lp.is_visible_layer('walls'):
+            self._draw_virtual_walls(p)
+        if lp.is_visible_layer('plan'):
+            self._draw_plan(p)
+        if lp.is_visible_layer('laser'):
+            self._draw_scan(p)
         self._draw_route(p)
-        self._draw_waypoints(p)
+        if lp.is_visible_layer('waypoints'):
+            self._draw_waypoints(p)
         self._draw_robot(p)
         self._draw_goal_marker(p)
         self._draw_pose_preview(p)
         self._draw_poly_in_progress(p)
         self._draw_measure(p)
-        self._draw_legend(p)
         self._draw_launch_status(p)
 
     def _draw_map(self, p):
@@ -251,11 +387,23 @@ class MapWidget(QWidget):
         if not self._scan_points:
             return
         rx, ry, ryaw = self._robot_pose
-        p.setPen(QPen(QColor(0, 200, 255, 200), 2))
+        p.setPen(QPen(QColor(255, 60, 60, 200), 2))
         for lx, ly in self._scan_points:
             mx = rx + lx * math.cos(ryaw) - ly * math.sin(ryaw)
             my = ry + lx * math.sin(ryaw) + ly * math.cos(ryaw)
             p.drawPoint(self._w2c(mx, my).toPoint())
+
+    def _draw_costmap(self, p, img, origin, res, wh):
+        if img is None:
+            return
+        w, h = wh
+        ox, oy = origin
+        pw = int(w * res * self._zoom)
+        ph = int(h * res * self._zoom)
+        tl = self._w2c(ox, oy + h * res)
+        p.drawImage(tl.toPoint(),
+                    img.scaled(pw, ph, Qt.IgnoreAspectRatio,
+                               Qt.SmoothTransformation))
 
     def _draw_robot(self, p):
         rx, ry, ryaw = self._robot_pose
@@ -546,20 +694,6 @@ class MapWidget(QWidget):
         p.drawLine(c_tip.toPoint(),
                    QPointF(c_tip.x() - size * math.cos(ang + 0.38),
                            c_tip.y() - size * math.sin(ang + 0.38)).toPoint())
-
-    def _draw_legend(self, p):
-        p.setFont(QFont('Sans', 8))
-        x0 = self.width() - 132
-        y0 = 10
-        p.fillRect(x0 - 6, y0 - 6, 132, len(_LEGEND) * 18 + 12,
-                   QColor(0, 0, 0, 140))
-        for i, (color, label) in enumerate(_LEGEND):
-            y = y0 + i * 18
-            p.setBrush(QBrush(color))
-            p.setPen(Qt.NoPen)
-            p.drawEllipse(x0, y + 1, 10, 10)
-            p.setPen(QPen(QColor(210, 210, 210)))
-            p.drawText(x0 + 14, y + 10, label)
 
     # ------------------------------------------------------------------ #
     # mouse                                                                #

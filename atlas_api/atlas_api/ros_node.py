@@ -963,10 +963,139 @@ def _quat_to_yaw(x: float, y: float, z: float, w: float) -> float:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Route Executor — step-by-step route execution in a background thread
+# ──────────────────────────────────────────────────────────────────────────────
+
+import time as _time
+
+
+class RouteExecutor:
+    """Execute a waypoint route with auto-timer or manual-confirm stops.
+
+    type='auto':    stop at each waypoint for stop_duration seconds, then continue.
+    type='confirm': wait at each waypoint until /atlas/route/confirm is POST-ed.
+
+    After the last waypoint, if auto_charge=True, triggers the full charge sequence.
+    """
+
+    def __init__(self, node: 'AtlasROSNode', waypoints: list,
+                 route_type: str = 'auto', stop_duration: float = 5.0,
+                 auto_charge: bool = True):
+        self._node        = node
+        self._waypoints   = waypoints
+        self._type        = route_type
+        self._stop_dur    = stop_duration
+        self._auto_charge = auto_charge
+
+        self._lock      = threading.Lock()
+        self._status    = 'idle'
+        self._idx       = -1
+        self._wp_name   = ''
+        self._error_msg = ''
+        self._confirmed = threading.Event()
+        self._stop_evt  = threading.Event()
+        self._thread    = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop_evt.set()
+        self._confirmed.set()
+
+    def confirm(self):
+        self._confirmed.set()
+
+    def get_status(self) -> dict:
+        with self._lock:
+            return {
+                'status':        self._status,
+                'current_idx':   self._idx,
+                'current_name':  self._wp_name,
+                'total':         len(self._waypoints),
+                'type':          self._type,
+                'stop_duration': self._stop_dur,
+                'auto_charge':   self._auto_charge,
+                'error':         self._error_msg,
+            }
+
+    def _nav_wait(self) -> str:
+        _time.sleep(0.5)
+        while not self._stop_evt.is_set():
+            state = self._node.get_nav_status()['state']
+            if state in ('succeeded', 'failed', 'cancelled'):
+                return state
+            _time.sleep(0.3)
+        return 'stopped'
+
+    def _run(self):
+        for i, wp in enumerate(self._waypoints):
+            if self._stop_evt.is_set():
+                break
+            with self._lock:
+                self._status  = 'navigating'
+                self._idx     = i
+                self._wp_name = wp.get('name', f'WP{i + 1}')
+
+            ok, msg = self._node.send_nav_goal(wp['x'], wp['y'], wp.get('yaw', 0.0))
+            if not ok:
+                with self._lock:
+                    self._status    = 'failed'
+                    self._error_msg = msg
+                return
+
+            result = self._nav_wait()
+            if self._stop_evt.is_set():
+                break
+            if result != 'succeeded':
+                with self._lock:
+                    self._status    = 'failed'
+                    self._error_msg = f'nav {result} at {self._wp_name}'
+                return
+
+            if self._type == 'auto':
+                with self._lock:
+                    self._status = 'waiting'
+                self._stop_evt.wait(timeout=self._stop_dur)
+            else:
+                with self._lock:
+                    self._status = 'waiting_confirm'
+                self._confirmed.clear()
+                self._confirmed.wait()
+
+            if self._stop_evt.is_set():
+                break
+
+        if self._stop_evt.is_set():
+            with self._lock:
+                self._status = 'stopped'
+            return
+
+        if self._auto_charge:
+            with self._lock:
+                self._status = 'charging'
+            try:
+                charge_wp = next(
+                    (w for w in self._node.get_waypoints()
+                     if w.get('type', '').lower() == 'charge'), None)
+                if charge_wp:
+                    self._node.send_charge_sequence(charge_wp, dock_wp=None)
+                else:
+                    self._node.get_logger().warn(
+                        'RouteExecutor: no charge waypoint, skipping')
+            except Exception as e:
+                self._node.get_logger().error(f'RouteExecutor charge error: {e}')
+
+        with self._lock:
+            self._status = 'done'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Module-level singleton
 # ──────────────────────────────────────────────────────────────────────────────
 
 _node: Optional[AtlasROSNode] = None
+_route_executor: Optional[RouteExecutor] = None
 
 
 def init_node() -> AtlasROSNode:

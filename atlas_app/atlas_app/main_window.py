@@ -386,6 +386,10 @@ class AtlasAppWindow(QMainWindow):
 
     def _on_goal_selected(self, x: float, y: float, yaw: float):
         self.map_widget.set_goal_marker(x, y)
+        if self._act_goal.isChecked():
+            # Toolbar Nav Goal active: send directly and stay in nav_goal mode
+            self._send_goal_api(x, y, yaw)
+            return
         if isinstance(self._current_panel, NaviModePanel):
             self._current_panel.set_goal_from_map(x, y, yaw)
         else:
@@ -393,16 +397,17 @@ class AtlasAppWindow(QMainWindow):
         self.request_map_mode('drag')
 
     def _on_pose_selected(self, x: float, y: float, yaw: float):
-        # If toolbar Set Pose is active, publish immediately and stay in set_pose mode
+        # PositionPanel pick-on-map: route to panel regardless of toolbar state
+        if isinstance(self._current_panel, PositionPanel):
+            self._current_panel.on_pose_selected(x, y, yaw)
+            return
+        # Toolbar Set Pose active: publish immediately and keep mode
         if self._act_pose.isChecked():
             self._relocate_api(x, y, yaw)
-            return  # keep set_pose mode active for continuous use
-
+            return
         if isinstance(self._current_panel, NaviModePanel):
             self._current_panel.set_pose_from_map(x, y, yaw)
             self.request_map_mode('drag')
-        elif isinstance(self._current_panel, PositionPanel):
-            self._current_panel.on_pose_selected(x, y, yaw)
         else:
             self._relocate_api(x, y, yaw)
             self.request_map_mode('drag')
@@ -590,6 +595,8 @@ class AtlasAppWindow(QMainWindow):
         pose = self.node.get_robot_pose()
         self.map_widget.update_robot_pose(pose)
         self.map_widget.update_plan(self.node.get_plan_poses())
+        self.map_widget.update_local_costmap(self.node.get_local_costmap())
+        self.map_widget.update_global_costmap(self.node.get_global_costmap())
 
         bat   = self.node.get_battery_pct()
         nav   = self.node.get_nav_state()

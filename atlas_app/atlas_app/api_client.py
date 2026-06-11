@@ -192,6 +192,28 @@ class AtlasApiClient:
     # special areas                                                        #
     # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+    # route execution                                                      #
+    # ------------------------------------------------------------------ #
+
+    def execute_route(self, waypoints: list, route_type: str = 'auto',
+                      stop_duration: float = 5.0, auto_charge: bool = True) -> Optional[dict]:
+        return self.post('/atlas/route/execute', {
+            'waypoints': waypoints,
+            'type': route_type,
+            'stop_duration': stop_duration,
+            'auto_charge': auto_charge,
+        })
+
+    def get_route_status(self) -> Optional[dict]:
+        return self.get('/atlas/route/status')
+
+    def confirm_route(self) -> Optional[dict]:
+        return self.post('/atlas/route/confirm')
+
+    def stop_route_exec(self) -> Optional[dict]:
+        return self.post('/atlas/route/stop')
+
     def get_areas(self) -> list:
         r = self.get('/atlas/special_area')
         return r.get('areas', []) if r else []

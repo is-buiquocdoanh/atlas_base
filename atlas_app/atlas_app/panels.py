@@ -9,8 +9,9 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QScrollArea, QDialog, QDialogButtonBox,
     QFileDialog, QFrame, QAbstractItemView, QSizePolicy,
+    QButtonGroup, QRadioButton, QSpinBox,
 )
-from PyQt5.QtCore import Qt, QSize, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QSize, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QPixmap, QFont
 
 from .node import app_log, _log
@@ -860,12 +861,15 @@ class NaviRoutePanel(QWidget):
     def __init__(self, win):
         super().__init__()
         self._win = win
+        self._polling = False
+
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(6)
 
+        # ── Available positions ───────────────────────────────────────────
         lay.addWidget(_lbl('Available positions:'))
         self._avail = QListWidget()
-        self._avail.setMaximumHeight(110)
+        self._avail.setMaximumHeight(100)
         lay.addWidget(self._avail)
 
         ha = QHBoxLayout()
@@ -877,7 +881,8 @@ class NaviRoutePanel(QWidget):
         lay.addWidget(_lbl('Route sequence:'))
         self._route = QListWidget()
         self._route.setDragDropMode(QAbstractItemView.InternalMove)
-        lay.addWidget(self._route, 1)
+        self._route.setMaximumHeight(120)
+        lay.addWidget(self._route)
 
         hm = QHBoxLayout()
         self._up_btn   = QPushButton('↑')
@@ -885,19 +890,58 @@ class NaviRoutePanel(QWidget):
         hm.addWidget(self._up_btn); hm.addWidget(self._down_btn)
         lay.addLayout(hm)
 
-        self._loop_cb = QCheckBox('Loop route')
-        lay.addWidget(self._loop_cb)
+        # ── Route type ────────────────────────────────────────────────────
+        tg = _grp('Route type')
+        self._rb_auto    = QRadioButton('Auto timer — dừng tự động mỗi điểm')
+        self._rb_confirm = QRadioButton('Manual confirm — chờ xác nhận mỗi điểm')
+        self._rb_auto.setChecked(True)
+        tg.layout().addWidget(self._rb_auto)
+        tg.layout().addWidget(self._rb_confirm)
 
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(QLabel('Dừng tại mỗi điểm:'))
+        self._stop_dur = QDoubleSpinBox()
+        self._stop_dur.setRange(1.0, 300.0); self._stop_dur.setSingleStep(1.0)
+        self._stop_dur.setValue(10.0); self._stop_dur.setSuffix(' s')
+        dur_row.addWidget(self._stop_dur)
+        tg.layout().addLayout(dur_row)
+
+        self._rb_auto.toggled.connect(lambda on: self._stop_dur.setEnabled(on))
+        self._auto_charge_cb = QCheckBox('Tự động về sạc sau khi xong route')
+        self._auto_charge_cb.setChecked(True)
+        tg.layout().addWidget(self._auto_charge_cb)
+        lay.addWidget(tg)
+
+        # ── Controls ──────────────────────────────────────────────────────
         hx = QHBoxLayout()
         self._start_btn = _btn('▶ Start Route', '#3a8a3a')
         self._stop_btn  = _btn('■ Stop',        '#8a3a3a')
         hx.addWidget(self._start_btn); hx.addWidget(self._stop_btn)
         lay.addLayout(hx)
 
+        # ── Status display ────────────────────────────────────────────────
         self._status_lbl = _lbl('Status: idle')
+        self._progress_lbl = _lbl('')
         lay.addWidget(self._status_lbl)
+        lay.addWidget(self._progress_lbl)
 
-        self._avail.itemDoubleClicked.connect(lambda _: self._add_to_route())
+        # Confirm button (visible only in waiting_confirm state)
+        self._confirm_btn = QPushButton('✓  Xác nhận — tiếp tục')
+        self._confirm_btn.setStyleSheet(
+            'QPushButton{background:#1a6a1a;color:#fff;font-weight:bold;font-size:14px;'
+            'border:none;border-radius:6px;padding:10px;}'
+            'QPushButton:hover{background:#2a8a2a;}'
+            'QPushButton:pressed{background:#0a4a0a;}')
+        self._confirm_btn.setVisible(False)
+        self._confirm_btn.clicked.connect(self._confirm_wp)
+        lay.addWidget(self._confirm_btn)
+
+        # ── Poll timer ────────────────────────────────────────────────────
+        self._poll_timer = QTimer()
+        self._poll_timer.setInterval(800)
+        self._poll_timer.timeout.connect(self._poll_status)
+
+        # ── Connections ───────────────────────────────────────────────────
         self._avail.itemDoubleClicked.connect(lambda _: self._add_to_route())
         self._add_btn.clicked.connect(self._add_to_route)
         self._rem_btn.clicked.connect(self._remove_from_route)
@@ -908,6 +952,8 @@ class NaviRoutePanel(QWidget):
         self._route.model().rowsMoved.connect(lambda *_: self._update_route_on_map())
 
         self._reload_avail()
+
+    # ── list helpers ──────────────────────────────────────────────────────
 
     def _reload_avail(self):
         cur = self._avail.currentRow()
@@ -958,36 +1004,98 @@ class NaviRoutePanel(QWidget):
             self._route.setCurrentRow(row + 1)
             self._update_route_on_map()
 
-    def _start_route(self):
+    # ── route execution ───────────────────────────────────────────────────
+
+    def _collect_waypoints(self) -> list:
         wps = []
         for i in range(self._route.count()):
             idx = self._route.item(i).data(Qt.UserRole)
             if idx is not None and idx < len(self._win.node.config.positions):
-                wps.append(self._win.node.config.positions[idx])
+                p = self._win.node.config.positions[idx]
+                wps.append({'x': p['x'], 'y': p['y'],
+                             'yaw': p.get('yaw', 0.0),
+                             'name': p.get('name', f'WP{i+1}')})
+        return wps
+
+    def _start_route(self):
+        wps = self._collect_waypoints()
         if not wps:
             return
 
-        # Convert to API format: [{'x','y','yaw'}, ...]
-        api_wps = [{'x': w['x'], 'y': w['y'], 'yaw': w.get('yaw', 0.0)} for w in wps]
+        route_type  = 'confirm' if self._rb_confirm.isChecked() else 'auto'
+        stop_dur    = self._stop_dur.value()
+        auto_charge = self._auto_charge_cb.isChecked()
+
+        self._status_lbl.setText('Status: starting…')
+        self._confirm_btn.setVisible(False)
 
         def _cb(r):
-            if not r:
-                # fallback to direct ROS
-                self._win.node.start_route(wps, loop=self._loop_cb.isChecked())
-            self._status_lbl.setText('Status: running' if r else 'Status: running (ROS)')
-
-        self._win.api.post_async('/atlas/nav/goal_list', api_wps, _cb)
-        self._status_lbl.setText('Status: sending…')
+            if r and r.get('status') == 'success':
+                self._poll_timer.start()
+            else:
+                self._status_lbl.setText('Status: failed to start')
+        self._win.api.post_async(
+            '/atlas/route/execute',
+            {'waypoints': wps, 'type': route_type,
+             'stop_duration': stop_dur, 'auto_charge': auto_charge},
+            _cb)
 
     def _stop_route(self):
-        def _cb(r):
-            if not r:
-                self._win.node.stop_route()
-        self._win.api.post_async('/atlas/nav/cancel', callback=_cb)
+        self._poll_timer.stop()
+        self._confirm_btn.setVisible(False)
+        self._win.api.post_async('/atlas/route/stop')
         self._status_lbl.setText('Status: stopped')
+        self._progress_lbl.setText('')
+
+    def _confirm_wp(self):
+        self._confirm_btn.setVisible(False)
+        self._win.api.post_async('/atlas/route/confirm')
+
+    # ── status polling ────────────────────────────────────────────────────
+
+    @pyqtSlot()
+    def _poll_status(self):
+        def _cb(r):
+            from PyQt5.QtCore import QMetaObject, Qt as Qt2
+            self._poll_result = r
+            QMetaObject.invokeMethod(self, '_apply_status', Qt2.QueuedConnection)
+        self._win.api.get_async('/atlas/route/status', _cb)
+
+    @pyqtSlot()
+    def _apply_status(self):
+        r = getattr(self, '_poll_result', None)
+        if not r:
+            return
+        status = r.get('status', 'idle')
+        idx    = r.get('current_idx', -1)
+        total  = r.get('total', 0)
+        name   = r.get('current_name', '')
+
+        _STATUS_TEXT = {
+            'idle':            'Status: idle',
+            'navigating':      f'Navigating → {name}  ({idx + 1}/{total})',
+            'waiting':         f'Waiting at {name}  ({idx + 1}/{total})',
+            'waiting_confirm': f'Chờ xác nhận tại {name}  ({idx + 1}/{total})',
+            'charging':        'Route done — về sạc…',
+            'done':            'Route done ✓',
+            'stopped':         'Status: stopped',
+            'failed':          f'Failed: {r.get("error", "?")}',
+        }
+        self._status_lbl.setText(_STATUS_TEXT.get(status, f'Status: {status}'))
+
+        progress_pct = int((idx + 1) / total * 100) if total > 0 and idx >= 0 else 0
+        self._progress_lbl.setText(
+            f'{idx + 1}/{total}  ({progress_pct}%)' if total > 0 else '')
+
+        show_confirm = (status == 'waiting_confirm')
+        self._confirm_btn.setVisible(show_confirm)
+
+        if status in ('done', 'stopped', 'failed', 'idle'):
+            self._poll_timer.stop()
+            self._confirm_btn.setVisible(False)
 
     def refresh(self, node):
-        self._status_lbl.setText(f'Status: {node.get_nav_state()}')
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════ #

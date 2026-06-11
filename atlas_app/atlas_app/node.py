@@ -119,6 +119,10 @@ class AtlasNode(Node):
         self._laser_ts: float = 0.0
         self._imu_ts: float = 0.0
 
+        # costmap data
+        self._local_costmap:  Optional[OccupancyGrid] = None
+        self._global_costmap: Optional[OccupancyGrid] = None
+
         # route
         self._route_queue: list = []
         self._route_backup: list = []
@@ -138,6 +142,10 @@ class AtlasNode(Node):
         self.create_subscription(Bool, '/atlas/emergency_stop', self._on_estop, _SENSOR_QOS)
         self.create_subscription(Path, '/plan', self._on_plan, _SENSOR_QOS)
         self.create_subscription(Imu, '/atlas/imu', self._on_imu, _SENSOR_QOS)
+        self.create_subscription(OccupancyGrid, '/local_costmap/costmap',
+                                 self._on_local_costmap, _SENSOR_QOS)
+        self.create_subscription(OccupancyGrid, '/global_costmap/costmap',
+                                 self._on_global_costmap, _SENSOR_QOS)
 
         # publishers
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -217,6 +225,14 @@ class AtlasNode(Node):
     def _on_imu(self, msg: Imu):
         self._imu_ts = time.time()
 
+    def _on_local_costmap(self, msg: OccupancyGrid):
+        with self._lock:
+            self._local_costmap = msg
+
+    def _on_global_costmap(self, msg: OccupancyGrid):
+        with self._lock:
+            self._global_costmap = msg
+
     # ------------------------------------------------------------------ #
     # TF                                                                   #
     # ------------------------------------------------------------------ #
@@ -268,6 +284,12 @@ class AtlasNode(Node):
 
     def get_imu_ok(self):
         return (time.time() - self._imu_ts) < 2.0
+
+    def get_local_costmap(self):
+        with self._lock: return self._local_costmap
+
+    def get_global_costmap(self):
+        with self._lock: return self._global_costmap
 
     # ------------------------------------------------------------------ #
     # publish commands                                                     #
