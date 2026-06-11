@@ -1,9 +1,9 @@
 """
 Map REST endpoints.
 
-Maps are stored under <workspace>/src/atlas_map/<name>/<name>.{yaml,pgm,...}
+Maps are stored under <workspace>/src/atlas_maps/<name>/<name>.{yaml,pgm,...}
 On startup all existing maps in that directory are scanned into _map_store.
-Falls back to ~/.atlas/maps if atlas_map cannot be located.
+Falls back to ~/.atlas/maps if atlas_maps cannot be located.
 """
 import glob
 import io
@@ -28,7 +28,7 @@ def _resolve_maps_dir() -> str:
         from ament_index_python.packages import get_package_share_directory
         pkg_dir = get_package_share_directory('atlas_slam')
         ws_dir  = os.path.abspath(os.path.join(pkg_dir, '..', '..', '..', '..'))
-        d = os.path.join(ws_dir, 'src', 'atlas_map')
+        d = os.path.join(ws_dir, 'src', 'atlas_maps')
         if os.path.isdir(d):
             return d
     except Exception:
@@ -55,8 +55,8 @@ def _safe_name(alias: str) -> str:
 
 def _scan_maps():
     """Populate _map_store with maps already on disk (called once at startup)."""
-    # Scan subdirectory maps: atlas_map/<dir>/<any>.yaml
-    # and flat maps:          atlas_map/<any>.yaml
+    # Scan subdirectory maps: atlas_maps/<dir>/<any>.yaml
+    # and flat maps:          atlas_maps/<any>.yaml
     patterns = [
         os.path.join(_MAPS_DIR, '*', '*.yaml'),
         os.path.join(_MAPS_DIR, '*.yaml'),

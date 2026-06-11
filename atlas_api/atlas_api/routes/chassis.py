@@ -49,9 +49,17 @@ def set_max_speed():
         speed = float(data['speed'])
     except (KeyError, ValueError):
         return jsonify({'status': 'error', 'message': 'speed field required'}), 400
-    if not (0.1 <= speed <= 1.0):
-        return jsonify({'status': 'error', 'message': 'speed must be 0.1–1.0 m/s'}), 400
-    get_node().update_settings({'max_speed': speed})
+    if not (0.05 <= speed <= 3.0):
+        return jsonify({'status': 'error', 'message': 'speed must be 0.05–3.0 m/s'}), 400
+    update = {'max_speed': speed}
+    if 'angular' in data:
+        try:
+            ang = float(data['angular'])
+            if 0.05 <= ang <= 6.28:
+                update['max_angular'] = ang
+        except (ValueError, TypeError):
+            pass
+    get_node().update_settings(update)
     return jsonify({'status': 'success'})
 
 

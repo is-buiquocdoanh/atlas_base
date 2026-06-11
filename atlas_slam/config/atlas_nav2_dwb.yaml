@@ -1,0 +1,393 @@
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /atlas/odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    plugin_lib_names:
+    - nav2_compute_path_to_pose_action_bt_node
+    - nav2_compute_path_through_poses_action_bt_node
+    - nav2_smooth_path_action_bt_node
+    - nav2_follow_path_action_bt_node
+    - nav2_spin_action_bt_node
+    - nav2_wait_action_bt_node
+    - nav2_assisted_teleop_action_bt_node
+    - nav2_back_up_action_bt_node
+    - nav2_drive_on_heading_bt_node
+    - nav2_clear_costmap_service_bt_node
+    - nav2_is_stuck_condition_bt_node
+    - nav2_goal_reached_condition_bt_node
+    - nav2_goal_updated_condition_bt_node
+    - nav2_globally_updated_goal_condition_bt_node
+    - nav2_is_path_valid_condition_bt_node
+    - nav2_initial_pose_received_condition_bt_node
+    - nav2_reinitialize_global_localization_service_bt_node
+    - nav2_rate_controller_bt_node
+    - nav2_distance_controller_bt_node
+    - nav2_speed_controller_bt_node
+    - nav2_truncate_path_action_bt_node
+    - nav2_truncate_path_local_action_bt_node
+    - nav2_goal_updater_node_bt_node
+    - nav2_recovery_node_bt_node
+    - nav2_pipeline_sequence_bt_node
+    - nav2_round_robin_node_bt_node
+    - nav2_transform_available_condition_bt_node
+    - nav2_time_expired_condition_bt_node
+    - nav2_path_expiring_timer_condition
+    - nav2_distance_traveled_condition_bt_node
+    - nav2_single_trigger_bt_node
+    - nav2_goal_updated_controller_bt_node
+    - nav2_is_battery_low_condition_bt_node
+    - nav2_navigate_through_poses_action_bt_node
+    - nav2_navigate_to_pose_action_bt_node
+    - nav2_remove_passed_goals_action_bt_node
+    - nav2_planner_selector_bt_node
+    - nav2_controller_selector_bt_node
+    - nav2_goal_checker_selector_bt_node
+    - nav2_controller_cancel_bt_node
+    - nav2_path_longer_on_approach_bt_node
+    - nav2_wait_cancel_bt_node
+    - nav2_spin_cancel_bt_node
+    - nav2_back_up_cancel_bt_node
+    - nav2_assisted_teleop_cancel_bt_node
+    - nav2_drive_on_heading_cancel_bt_node
+
+bt_navigator_navigate_through_poses_rclcpp_node:
+  ros__parameters: {}
+
+bt_navigator_navigate_to_pose_rclcpp_node:
+  ros__parameters: {}
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.3
+      movement_time_allowance: 10.0
+
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25   # [CHỈNH] Sai số vị trí chấp nhận (m)
+      yaw_goal_tolerance: 0.25  # [CHỈNH] Sai số hướng chấp nhận (rad)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # DWB Local Planner (Dynamic Window Approach Based)
+    # Cơ chế: mô phỏng nhiều quỹ đạo trong cửa sổ vận tốc khả thi (dynamic
+    # window), đánh giá qua các critics rồi chọn quỹ đạo tốt nhất.
+    # Phù hợp robot differential drive, tốc độ thấp-trung, môi trường có
+    # nhiều vật cản tĩnh.
+    # ══════════════════════════════════════════════════════════════════════
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: false  # true để xem chi tiết quỹ đạo trong RViz (tốn CPU)
+
+      # ── Giới hạn vận tốc ─────────────────────────────────────────────
+      # [CHỈNH] Phải khớp với thông số thực tế của motor/driver
+      min_vel_x: 0.3          # Tốc độ tiến tối thiểu (m/s); đặt âm nếu muốn lùi
+      min_vel_y: 0.0          # DiffDrive: luôn = 0
+      max_vel_x: 0.3          # [CHỈNH] Tốc độ tiến tối đa (m/s)
+      max_vel_y: 0.0          # DiffDrive: luôn = 0
+      max_vel_theta: 0.7      # [CHỈNH] Tốc độ quay tối đa (rad/s)
+      min_speed_xy: 0.0       # Tốc độ tổng hợp tối thiểu khi di chuyển thẳng
+      max_speed_xy: 0.3       # [CHỈNH] Bằng max_vel_x với DiffDrive
+      min_speed_theta: 0.0    # Tốc độ góc tối thiểu (rad/s)
+
+      # ── Giới hạn gia tốc ─────────────────────────────────────────────
+      # [CHỈNH] Nếu robot bị trượt bánh hoặc giật → giảm acc_lim; nếu phản
+      # ứng chậm → tăng acc_lim. decel_lim âm = giảm tốc.
+      acc_lim_x: 1.0          # [CHỈNH] Gia tốc tiến tối đa (m/s²)
+      acc_lim_y: 0.0          # DiffDrive: luôn = 0
+      acc_lim_theta: 1.0      # [CHỈNH] Gia tốc góc tối đa (rad/s²)
+      decel_lim_x: -4.0       # [CHỈNH] Giảm tốc tiến tối đa (m/s²) — âm
+      decel_lim_theta: -4.0   # [CHỈNH] Giảm tốc góc tối đa (rad/s²) — âm
+
+      # ── Lấy mẫu quỹ đạo ─────────────────────────────────────────────
+      # [CHỈNH] Tăng vx_samples/vtheta_samples → đường đi mịn hơn nhưng
+      # tốn CPU hơn. Với CPU yếu thì giảm xuống 10/20.
+      vx_samples: 20          # [CHỈNH] Số mẫu vận tốc tiến (khuyến nghị: 15-30)
+      vy_samples: 1           # DiffDrive: luôn = 1
+      vtheta_samples: 40      # [CHỈNH] Số mẫu vận tốc góc (khuyến nghị: 20-60)
+
+      # [CHỈNH] sim_time dài → nhìn xa hơn, vòng tránh chướng ngại tốt hơn
+      # nhưng chậm hơn. Tăng nếu robot hay bị kẹt ở góc hẹp (1.5–2.5 s).
+      sim_time: 1.7           # [CHỈNH] Thời gian mô phỏng mỗi quỹ đạo (s)
+      linear_granularity: 0.05    # Bước mô phỏng tuyến tính (m) — thường không đổi
+      angular_granularity: 0.025  # Bước mô phỏng góc (rad) — thường không đổi
+      transform_tolerance: 0.2    # Thời gian tối đa chờ TF (s)
+
+      trans_stopped_velocity: 0.25        # Ngưỡng vận tốc coi là "đứng yên" (m/s)
+      short_circuit_trajectory_evaluation: true  # Bỏ qua sớm quỹ đạo va chạm → nhanh hơn
+
+      # ── Critics — hàm đánh giá và chọn quỹ đạo ─────────────────────
+      # Mỗi critic cho điểm quỹ đạo theo tiêu chí riêng; tổng điểm thấp
+      # nhất được chọn. Tăng scale → critic đó ảnh hưởng nhiều hơn.
+      critics:
+        - "RotateToGoal"   # Xoay về hướng mục tiêu khi đến gần
+        - "Oscillation"    # Phạt dao động qua lại (anti-jitter)
+        - "BaseObstacle"   # Tránh vật cản theo costmap
+        - "GoalAlign"      # Hướng về mục tiêu theo hướng nhìn phía trước
+        - "PathAlign"      # Bám theo hướng của global path
+        - "PathDist"       # Giữ khoảng cách gần global path
+        - "GoalDist"       # Giảm khoảng cách đến mục tiêu
+
+      # BaseObstacle: tránh vật cản
+      # [CHỈNH] Tăng scale → tránh xa hơn; robot vào góc hẹp khó hơn.
+      # Giảm → đi gần vật cản hơn nhưng nguy cơ va chạm cao hơn.
+      BaseObstacle.scale: 0.02        # [CHỈNH] Trọng số tránh vật cản (0.01–0.1)
+
+      # PathAlign / PathDist: bám theo global path
+      # [CHỈNH] Tăng scale → đi sát đường dự kiến hơn, ít "tắt đường".
+      # Giảm → linh hoạt hơn khi có vật cản che đường.
+      PathAlign.scale: 32.0           # [CHỈNH] Trọng số bám hướng path (20–50)
+      PathAlign.forward_point_distance: 0.325  # Điểm nhìn phía trước để tính góc (m)
+      PathDist.scale: 32.0            # [CHỈNH] Trọng số khoảng cách đến path (20–50)
+
+      # GoalAlign / GoalDist: tiếp cận mục tiêu
+      # [CHỈNH] Tăng GoalDist.scale → robot "lao thẳng" về đích, ít né.
+      # Tăng GoalAlign.scale → robot hướng đầu về đích sớm hơn.
+      GoalAlign.scale: 24.0           # [CHỈNH] Trọng số hướng về mục tiêu (15–40)
+      GoalAlign.forward_point_distance: 0.325
+      GoalDist.scale: 24.0            # [CHỈNH] Trọng số khoảng cách đến mục tiêu (15–40)
+
+      # RotateToGoal: xoay đúng hướng khi đã đến gần đích
+      # [CHỈNH] Tăng scale → xoay mạnh/nhanh về đúng yaw goal.
+      # slowing_factor: tăng → bắt đầu giảm tốc sớm hơn khi vào giai đoạn xoay.
+      RotateToGoal.scale: 32.0        # [CHỈNH] Trọng số xoay về hướng mục tiêu (20–50)
+      RotateToGoal.slowing_factor: 5.0    # [CHỈNH] Hệ số giảm tốc khi xoay (3–8)
+      RotateToGoal.lookahead_time: -1.0   # -1 = tắt lookahead (thường không đổi)
+
+      # Oscillation: phạt dao động
+      # [CHỈNH] Tăng → ít dao động hơn nhưng robot có thể "cứng" hơn.
+      # oscillation_reset_dist / angle: reset bộ đếm dao động khi đã di chuyển đủ.
+      Oscillation.scale: 1.0              # [CHỈNH] Trọng số phạt dao động (0.5–3)
+      Oscillation.oscillation_reset_dist: 0.05   # Khoảng cách reset bộ đếm (m)
+      Oscillation.oscillation_reset_angle: 0.2   # Góc reset bộ đếm (rad)
+      Oscillation.oscillation_reset_time: -1.0   # -1 = không reset theo thời gian
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 30.0
+      publish_frequency: 10.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 5
+      height: 5
+      resolution: 0.05
+      robot_radius: 0.3
+      plugins: ["obstacle_layer", "voxel_layer", "keepout_filter", "inflation_layer"]
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/keepout_filter_info"
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.4
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /atlas/scan_filtered
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: True
+        publish_voxel_map: True
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        max_obstacle_height: 2.0
+        mark_threshold: 0
+        observation_sources: scan
+        scan:
+          topic: /atlas/scan_filtered
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 5.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.0
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      footprint_padding: 0.03
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      robot_radius: 0.3
+      resolution: 0.05
+      plugins: ["static_layer", "obstacle_layer", "voxel_layer", "keepout_filter", "speed_filter", "inflation_layer"]
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "/keepout_filter_info"
+      speed_filter:
+        plugin: "nav2_costmap_2d::SpeedFilter"
+        enabled: True
+        filter_info_topic: "/speed_filter_info"
+        speed_limit_topic: "/speed_limit"
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        footprint_clearing_enabled: true
+        max_obstacle_height: 2.0
+        combination_method: 1
+        scan:
+          topic: /atlas/scan_filtered
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          inf_is_valid: false
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: True
+        footprint_clearing_enabled: true
+        max_obstacle_height: 2.0
+        publish_voxel_map: True
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        unknown_threshold: 15
+        mark_threshold: 0
+        observation_sources: pointcloud
+        combination_method: 1
+        pointcloud:
+          topic: /intel_realsense_r200_depth/points
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          clearing: True
+          marking: True
+          data_type: "PointCloud2"
+          transport_type: "raw"
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+        enabled: true
+        subscribe_to_updates: true
+        transform_tolerance: 0.1
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        inflation_radius: 0.4
+        cost_scaling_factor: 10.0
+        inflate_unknown: false
+        inflate_around_unknown: true
+      always_send_full_costmap: True
+      introspection_mode: "disabled"
+
+map_server:
+  ros__parameters:
+    yaml_filename: ""
+
+map_saver:
+  ros__parameters:
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 20.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+
+smoother_server:
+  ros__parameters:
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    assisted_teleop:
+      plugin: "nav2_behaviors/AssistedTeleop"
+    global_frame: odom
+    robot_base_frame: base_link
+    transform_tolerance: 0.1
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
+
+robot_state_publisher:
+  ros__parameters: {}
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [1.0, 0.0, 2.0]
+    min_velocity: [-1.0, 0.0, -2.0]
+    max_accel: [4.0, 0.0, 4.0]
+    max_decel: [-4.0, 0.0, -4.0]
+    odom_topic: "/atlas/odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0

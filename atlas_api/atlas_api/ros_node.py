@@ -7,7 +7,11 @@ All public getters return copies; callers never hold the internal lock.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
+import signal
+import subprocess
 import threading
 from typing import Optional
 
@@ -52,6 +56,9 @@ _DEFAULT_SETTINGS: dict = {
     'xy_goal_tolerance': 0.2,
     'yaw_goal_tolerance': 0.2,
     'language':          'en',
+    # docking: 'line_follow' | 'nav2_waypoint' | 'aruco'
+    'dock_method':       'line_follow',
+    'charging_pile':     'charging_pile',   # name of approach waypoint
 }
 
 _LATCHED_QOS = QoSProfile(
@@ -59,6 +66,25 @@ _LATCHED_QOS = QoSProfile(
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
     reliability=ReliabilityPolicy.RELIABLE,
 )
+
+_DATA_DIR = os.path.expanduser('~/.atlas_api')
+os.makedirs(_DATA_DIR, exist_ok=True)
+
+def _persist_load(name: str, default):
+    path = os.path.join(_DATA_DIR, name)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def _persist_save(name: str, data):
+    path = os.path.join(_DATA_DIR, name)
+    try:
+        with open(path, 'w') as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -69,12 +95,14 @@ class AtlasROSNode(Node):
 
         self._lock = threading.Lock()
 
-        # ── in-memory stores ──────────────────────────────────────────
-        self._waypoints:     dict[str, dict] = {}
-        self._routes:        dict[str, dict] = {}
-        self._virtual_walls: list            = []
-        self._special_areas: dict[str, dict] = {}
-        self._settings:      dict            = dict(_DEFAULT_SETTINGS)
+        # ── in-memory stores (pre-loaded from disk) ──────────────────
+        self._waypoints:     dict[str, dict] = {w['name']: w for w in _persist_load('waypoints.json', [])}
+        self._routes:        dict[str, dict] = {r['name']: r for r in _persist_load('routes.json',    [])}
+        self._virtual_walls: list            = _persist_load('walls.json',   [])
+        _areas_list = _persist_load('areas.json', [])
+        self._special_areas: dict[str, dict] = {a['id']: a for a in _areas_list}
+        saved_settings = _persist_load('settings.json', {})
+        self._settings:      dict            = {**_DEFAULT_SETTINGS, **saved_settings}
 
         # ── sensor state (updated by callbacks) ──────────────────────
         self._pose    = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
@@ -103,6 +131,10 @@ class AtlasROSNode(Node):
         self._nav_goal_handle  = None
         self._nav_path         = []       # [[x,y], …] global plan from /plan
         self._next_goal        = None     # {x,y,yaw} queued for after current goal succeeds
+        self._next_dock        = False    # True = start dock when approach goal succeeds
+
+        # ── docking state ────────────────────────────────────────────
+        self._dock_proc        = None     # subprocess.Popen | None
 
         # TF2 pose flag: True once map→base_link is available
         self._tf2_pose_ok = False
@@ -547,22 +579,85 @@ class AtlasROSNode(Node):
             approach_wp['x'], approach_wp['y'], approach_wp.get('yaw', 0.0))
         if not ok:
             return False, msg
-        if dock_wp:
-            with self._lock:
+        method = self._settings.get('dock_method', 'line_follow')
+        with self._lock:
+            if method == 'nav2_waypoint' and dock_wp:
                 self._next_goal = {'x': dock_wp['x'], 'y': dock_wp['y'],
                                    'yaw': dock_wp.get('yaw', 0.0)}
+            else:
+                # line_follow / aruco: start dock subprocess after approach
+                self._next_dock = True
         return True, 'ok'
+
+    # ── docking ─────────────────────────────────────────────────────
+
+    def start_dock(self, dock_name: str = None) -> tuple[bool, str]:
+        """Start docking using the configured dock_method.
+
+        dock_method = 'line_follow'   → spawns line_follow.py subprocess (magnetic line)
+        dock_method = 'nav2_waypoint' → navigates to dock waypoint via nav2
+        dock_method = 'aruco'         → (future) ArUco-based docking node
+        """
+        method = self._settings.get('dock_method', 'line_follow')
+        self.get_logger().info(f'start_dock: method={method}')
+        if method == 'line_follow':
+            return self._start_dock_line_follow()
+        elif method == 'nav2_waypoint':
+            # find waypoint by type 'dock' first, then fall back to name
+            wps = self.get_waypoints()
+            wp  = next((w for w in wps if w.get('type', '').lower() == 'dock'), None)
+            if not wp and dock_name:
+                wp = next((w for w in wps if w['name'] == dock_name), None)
+            if not wp:
+                return False, 'No waypoint with type "dock" found'
+            return self.send_nav_goal(wp['x'], wp['y'], wp.get('yaw', 0.0))
+        elif method == 'aruco':
+            # Placeholder — replace with ArUco docking launch
+            return False, 'aruco docking not yet implemented'
+        else:
+            return False, f'unknown dock_method: {method}'
+
+    def _start_dock_line_follow(self) -> tuple[bool, str]:
+        self.stop_dock()
+        try:
+            self._dock_proc = subprocess.Popen(
+                ['ros2', 'run', 'a2_bringup', 'line_follow.py'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.get_logger().info(f'Dock line_follow started pid={self._dock_proc.pid}')
+            return True, 'ok'
+        except Exception as e:
+            self.get_logger().error(f'start_dock_line_follow: {e}')
+            return False, str(e)
+
+    def stop_dock(self):
+        proc = self._dock_proc
+        self._dock_proc = None
+        if proc and proc.poll() is None:
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                self.get_logger().info(f'Dock stopped (pid={proc.pid})')
+            except Exception:
+                pass
+
+    def is_docking(self) -> bool:
+        return self._dock_proc is not None and self._dock_proc.poll() is None
 
     def cancel_nav(self):
         with self._lock:
             handle = self._nav_goal_handle
-            self._next_goal = None   # also cancel queued dock
+            self._next_goal = None
+            self._next_dock = False
         if handle:
             handle.cancel_goal_async()
         with self._lock:
             self._nav_state       = 'cancelled'
             self._nav_goal_handle = None
             self._nav_path        = []
+        self.stop_dock()
 
     # -- action callbacks (called from executor thread) ---------------
 
@@ -580,27 +675,35 @@ class AtlasROSNode(Node):
         status = future.result().status   # 4=SUCCEEDED 5=CANCELED 6=ABORTED
         with self._lock:
             next_goal = self._next_goal
+            next_dock = self._next_dock
             self._next_goal       = None
+            self._next_dock       = False
             self._nav_goal_handle = None
             self._nav_path        = []
             if status == 4:
                 self._nav_state = 'succeeded'
             elif status == 5:
                 self._nav_state = 'cancelled'
-                next_goal = None   # don't chain after cancel
+                next_goal = None
+                next_dock = False
             else:
                 self._nav_state = 'failed'
                 next_goal = None
+                next_dock = False
 
-        # Auto-chain next goal (e.g. dock after approach)
+        # Auto-chain: nav2 waypoint or docking subprocess
         if next_goal:
             self.send_nav_goal(next_goal['x'], next_goal['y'], next_goal.get('yaw', 0.0))
+        elif next_dock:
+            self.start_dock()
 
     # ── in-memory CRUD ───────────────────────────────────────────────
 
     def update_settings(self, updates: dict):
         with self._lock:
             self._settings.update(updates)
+            snap = dict(self._settings)
+        _persist_save('settings.json', snap)
         self._apply_settings_to_nav2()
 
     # ── Apply settings to running nav2 nodes ────────────────────────
@@ -638,22 +741,25 @@ class AtlasROSNode(Node):
 
         max_spd  = float(s.get('max_speed',         0.7))
         min_spd  = float(s.get('min_speed',         0.1))
+        max_ang  = float(s.get('max_angular',        1.0))
         infl_r   = float(s.get('inflation_radius',  0.35))
         rob_r    = float(s.get('robot_radius',       0.3))
         xy_tol   = float(s.get('xy_goal_tolerance',  0.2))
         yaw_tol  = float(s.get('yaw_goal_tolerance', 0.2))
 
         changes = [
-            # node                          param name                       value              type
-            ('velocity_smoother',           'max_velocity',                  [max_spd,0.,2.], DA),
-            ('velocity_smoother',           'min_velocity',                  [-max_spd,0.,-2.], DA),
-            ('controller_server',           'FollowPath.vx_max',             max_spd,         D),
-            ('controller_server',           'general_goal_checker.xy_goal_tolerance',  xy_tol,  D),
-            ('controller_server',           'general_goal_checker.yaw_goal_tolerance', yaw_tol, D),
-            ('local_costmap/local_costmap', 'inflation_layer.inflation_radius', infl_r,        D),
-            ('global_costmap/global_costmap','inflation_layer.inflation_radius', infl_r,       D),
-            ('local_costmap/local_costmap', 'robot_radius',                  rob_r,           D),
-            ('global_costmap/global_costmap','robot_radius',                 rob_r,           D),
+            # node                          param name                            value                  type
+            ('velocity_smoother',           'max_velocity',                       [max_spd,0.,max_ang],  DA),
+            ('velocity_smoother',           'min_velocity',                       [-max_spd,0.,-max_ang],DA),
+            ('controller_server',           'FollowPath.max_vel_x',               max_spd,               D),
+            ('controller_server',           'FollowPath.max_speed_xy',            max_spd,               D),
+            ('controller_server',           'FollowPath.max_vel_theta',           max_ang,               D),
+            ('controller_server',           'general_goal_checker.xy_goal_tolerance',  xy_tol,           D),
+            ('controller_server',           'general_goal_checker.yaw_goal_tolerance', yaw_tol,          D),
+            ('local_costmap/local_costmap', 'inflation_layer.inflation_radius',   infl_r,                D),
+            ('global_costmap/global_costmap','inflation_layer.inflation_radius',  infl_r,                D),
+            ('local_costmap/local_costmap', 'robot_radius',                       rob_r,                 D),
+            ('global_costmap/global_costmap','robot_radius',                      rob_r,                 D),
         ]
 
         for node_name, pname, val, ptype in changes:
@@ -666,32 +772,51 @@ class AtlasROSNode(Node):
     def upsert_waypoint(self, wp: dict):
         with self._lock:
             self._waypoints[wp['name']] = wp
+            snap = list(self._waypoints.values())
+        _persist_save('waypoints.json', snap)
 
     def delete_waypoint(self, name: str) -> bool:
         with self._lock:
-            return self._waypoints.pop(name, None) is not None
+            found = self._waypoints.pop(name, None) is not None
+            snap  = list(self._waypoints.values())
+        if found:
+            _persist_save('waypoints.json', snap)
+        return found
 
     def upsert_route(self, route: dict):
         with self._lock:
             self._routes[route['name']] = route
+            snap = list(self._routes.values())
+        _persist_save('routes.json', snap)
 
     def delete_route(self, name: str) -> bool:
         with self._lock:
-            return self._routes.pop(name, None) is not None
+            found = self._routes.pop(name, None) is not None
+            snap  = list(self._routes.values())
+        if found:
+            _persist_save('routes.json', snap)
+        return found
 
     def set_virtual_walls(self, walls: list):
         with self._lock:
             self._virtual_walls = list(walls)
+        _persist_save('walls.json', walls)
         self._publish_costmap_filters()
 
     def set_special_areas(self, areas: list):
         with self._lock:
             self._special_areas = {a['id']: a for a in areas}
+        _persist_save('areas.json', areas)
         self._publish_costmap_filters()
 
     def delete_special_area(self, area_id: str) -> bool:
         with self._lock:
-            return self._special_areas.pop(area_id, None) is not None
+            found = self._special_areas.pop(area_id, None) is not None
+            remaining = list(self._special_areas.values())
+        if found:
+            _persist_save('areas.json', remaining)
+            self._publish_costmap_filters()
+        return found
 
 
     # ── Costmap filter publishing ────────────────────────────────────
@@ -718,11 +843,11 @@ class AtlasROSNode(Node):
         # ── keepout mask: virtual walls + forbidden areas ─────────────
         keepout = [0] * (W * H)
         for wall in walls:
-            pts = wall.get('points', [])
-            for i in range(len(pts) - 1):
+            # wall is [[x1,y1],[x2,y2],...] after JSON round-trip from the app
+            for i in range(len(wall) - 1):
                 _raster_line(keepout, W, H, res, ox, oy,
-                             pts[i]['x'], pts[i]['y'],
-                             pts[i+1]['x'], pts[i+1]['y'], 100)
+                             wall[i][0], wall[i][1],
+                             wall[i+1][0], wall[i+1][1], 100)
         for area in areas:
             if area.get('type') == 'forbidden':
                 _raster_polygon(keepout, W, H, res, ox, oy,
@@ -809,7 +934,8 @@ def _raster_polygon(data, W, H, res, ox, oy, polygon, val):
     """Scanline fill for a polygon expressed in world coords."""
     if len(polygon) < 3:
         return
-    pts = [_w2g(p['x'], p['y'], res, ox, oy) for p in polygon]
+    # points arrive as [x,y] arrays (JSON-serialized tuples from the app)
+    pts = [_w2g(p[0], p[1], res, ox, oy) for p in polygon]
     xs  = [p[0] for p in pts]; ys = [p[1] for p in pts]
     y_lo = max(0, min(ys)); y_hi = min(H-1, max(ys))
     n = len(pts)

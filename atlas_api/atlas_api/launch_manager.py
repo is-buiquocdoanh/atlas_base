@@ -2,8 +2,8 @@
 LaunchManager — spawns and terminates ROS 2 launch processes for mode switching.
 
 Mode 0 (idle):         stop everything
-Mode 1 / 3 (mapping): a1_slam_toolbox.launch.py
-Mode 2 (navigation):  a1_map_server.launch.py  +  a1_navigation.launch.py
+Mode 1 / 3 (mapping): atlas_slam_toolbox_real.launch.py
+Mode 2 (navigation):  atlas_map_server_real.launch.py  +  atlas_navigation_real.launch.py
 
 Kill strategy: ros2 launch is spawned with start_new_session=True, so it
 becomes its own process-group leader.  os.killpg() sends the signal to the
@@ -75,8 +75,8 @@ class LaunchManager:
         with self._lock:
             self._kill('navigation')
             self._kill('map_server')
-            self._spawn('slam', ['ros2', 'launch', 'a1_slam',
-                                 f'a1_slam_toolbox_{self._robot}.launch.py'])
+            self._spawn('slam', ['ros2', 'launch', 'atlas_slam',
+                                 f'atlas_slam_toolbox_{self._robot}.launch.py'])
 
     def start_incremental_mapping(self, posegraph_base: str):
         """Kill nav stack, start slam_toolbox and load an existing posegraph for extension.

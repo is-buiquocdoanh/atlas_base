@@ -74,53 +74,78 @@ def nav_path():
     return jsonify({'path': get_node().get_nav_path()})
 
 
+def _find_charge_wp():
+    """Return the first waypoint with type 'charge', or None."""
+    for w in get_node().get_waypoints():
+        if w.get('type', '').lower() == 'charge':
+            return w
+    return None
+
+
 @bp.post('/atlas/nav/charge_approach')
 def nav_charge_approach():
-    """Stage 1: Navigate to the position in front of the charging station."""
-    data = request.get_json(force=True) or {}
-    name = data.get('name', 'charging_pile')
-    wps  = {w['name']: w for w in get_node().get_waypoints()}
-    wp   = wps.get(name)
+    """Stage 1: Navigate to the waypoint with type='charge'."""
+    wp = _find_charge_wp()
     if not wp:
         return jsonify({'status': 'error',
-                        'message': f'charging waypoint "{name}" not found'}), 404
+                        'message': 'No waypoint with type "charge" found. '
+                                   'Create a position and set its type to Charge.'}), 404
     ok, msg = get_node().send_nav_goal(wp['x'], wp['y'], wp.get('yaw', 0.0))
     if not ok:
         return jsonify({'status': 'error', 'message': msg}), 503
-    return jsonify({'status': 'success', 'stage': 'approach', 'waypoint': name})
+    return jsonify({'status': 'success', 'stage': 'approach', 'waypoint': wp['name']})
 
 
 @bp.post('/atlas/nav/charge_dock')
 def nav_charge_dock():
-    """Stage 2: Move into the dock (navigate to <name>_dock waypoint)."""
+    """Stage 2: Dock using the configured dock_method."""
     data      = request.get_json(force=True) or {}
-    name      = data.get('name', 'charging_pile')
-    dock_name = data.get('dock_name') or (name + '_dock')
-    wps       = {w['name']: w for w in get_node().get_waypoints()}
-    wp        = wps.get(dock_name)
-    if not wp:
-        return jsonify({'status': 'error',
-                        'message': f'dock waypoint "{dock_name}" not found — '
-                                   f'create a waypoint named "{dock_name}"'}), 404
-    ok, msg = get_node().send_nav_goal(wp['x'], wp['y'], wp.get('yaw', 0.0))
+    dock_name = data.get('dock_name')
+    ok, msg   = get_node().start_dock(dock_name)
     if not ok:
         return jsonify({'status': 'error', 'message': msg}), 503
-    return jsonify({'status': 'success', 'stage': 'dock', 'waypoint': dock_name})
+    method = get_node()._settings.get('dock_method', 'line_follow')
+    return jsonify({'status': 'success', 'stage': 'dock', 'method': method})
+
+
+@bp.post('/atlas/nav/dock')
+def nav_dock():
+    """Start docking immediately using the configured dock_method."""
+    data      = request.get_json(force=True) or {}
+    dock_name = data.get('dock_name')
+    ok, msg   = get_node().start_dock(dock_name)
+    if not ok:
+        return jsonify({'status': 'error', 'message': msg}), 503
+    method = get_node()._settings.get('dock_method', 'line_follow')
+    return jsonify({'status': 'success', 'method': method})
+
+
+@bp.post('/atlas/nav/dock_stop')
+def nav_dock_stop():
+    """Stop active docking subprocess."""
+    get_node().stop_dock()
+    return jsonify({'status': 'success'})
+
+
+@bp.get('/atlas/nav/dock_status')
+def nav_dock_status():
+    return jsonify({
+        'docking':     get_node().is_docking(),
+        'dock_method': get_node()._settings.get('dock_method', 'line_follow'),
+    })
 
 
 @bp.post('/atlas/nav/charge')
 def nav_charge():
-    """Full charge sequence: approach → auto-dock when approach succeeds."""
-    data      = request.get_json(force=True) or {}
-    name      = data.get('name', 'charging_pile')
-    dock_name = data.get('dock_name') or (name + '_dock')
-    wps       = {w['name']: w for w in get_node().get_waypoints()}
-    wp        = wps.get(name)
+    """Full charge sequence: navigate to type='charge' waypoint → dock automatically."""
+    wp = _find_charge_wp()
     if not wp:
         return jsonify({'status': 'error',
-                        'message': f'charging waypoint "{name}" not found'}), 404
-    ok, msg = get_node().send_charge_sequence(wp, wps.get(dock_name))
+                        'message': 'No waypoint with type "charge" found. '
+                                   'Create a position and set its type to Charge.'}), 404
+    ok, msg = get_node().send_charge_sequence(wp, dock_wp=None)
     if not ok:
         return jsonify({'status': 'error', 'message': msg}), 503
+    method = get_node()._settings.get('dock_method', 'line_follow')
     return jsonify({'status': 'success', 'stage': 'full_sequence',
-                    'approach': name, 'dock': dock_name})
+                    'approach': wp['name'], 'dock_method': method})

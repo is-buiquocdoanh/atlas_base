@@ -11,7 +11,7 @@ USE_SIM_TIME = False
 def generate_launch_description():
     package_dir = get_package_share_directory('atlas_slam')
     workspace_dir = os.path.abspath(os.path.join(package_dir, '..', '..', '..', '..'))
-    maps_dir = os.path.join(workspace_dir, 'src', 'atlas_map')
+    maps_dir = os.path.join(workspace_dir, 'src', 'atlas_maps')
     params_file = os.path.join(package_dir, 'config', 'atlas_localization.yaml')
     rviz_config = os.path.join(package_dir, 'rviz', 'nav2_default_view.rviz')
 
