@@ -1797,3 +1797,236 @@ class SettingsPanel(QWidget):
 
     def refresh(self, _node):
         pass
+
+
+# ══════════════════════════════════════════════════════════════════════════ #
+# VideoStreamPanel                                                           #
+# ══════════════════════════════════════════════════════════════════════════ #
+
+import urllib.request
+import urllib.error
+import re as _re
+from PyQt5.QtCore import QThread, pyqtSignal as _Signal, QPoint
+from PyQt5.QtWidgets import QProxyStyle, QStyle
+from PyQt5.QtGui import QPainter as _QPainter, QPolygon as _QPolygon, QColor as _QColor
+
+_DEFAULT_TOPICS = ['/inference_result', '/image_raw', '/yolo_image_raw']
+_VIDEO_PORT = 6060
+
+_CL_RE = _re.compile(rb'Content-Length:\s*(\d+)', _re.IGNORECASE)
+
+
+class _ArrowStyle(QProxyStyle):
+    """Draws a visible light-grey down-arrow for QComboBox on dark themes."""
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element == QStyle.PE_IndicatorArrowDown:
+            painter.save()
+            painter.setRenderHint(_QPainter.Antialiasing)
+            r  = option.rect
+            cx = r.center().x()
+            cy = r.center().y()
+            poly = _QPolygon([QPoint(cx - 4, cy - 2),
+                              QPoint(cx + 4, cy - 2),
+                              QPoint(cx,     cy + 3)])
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(_QColor('#aaaaaa'))
+            painter.drawPolygon(poly)
+            painter.restore()
+        else:
+            super().drawPrimitive(element, option, painter, widget)
+
+
+class _MjpegWorker(QThread):
+    """QThread that reads a multipart/x-mixed-replace MJPEG stream."""
+    frame_ready = _Signal(bytes)
+    error       = _Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._url    = ''
+        self._active = False
+
+    def start_stream(self, url: str):
+        if self.isRunning():
+            self._active = False
+            self.quit()
+            self.wait(2000)
+        self._url    = url
+        self._active = True
+        self.start()          # QThread.start() → calls run() in worker thread
+
+    def stop_stream(self):
+        self._active = False
+        self.quit()
+        self.wait(2000)
+
+    def run(self):
+        try:
+            req = urllib.request.urlopen(self._url, timeout=8)
+            buf = b''
+            while self._active:
+                chunk = req.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                # Parse multipart frames using Content-Length header
+                while self._active:
+                    hdr_end = buf.find(b'\r\n\r\n')
+                    if hdr_end == -1:
+                        break
+                    headers = buf[:hdr_end]
+                    m = _CL_RE.search(headers)
+                    if not m:
+                        # No Content-Length — skip to next boundary
+                        nxt = buf.find(b'--', hdr_end)
+                        buf = buf[nxt:] if nxt != -1 else buf[hdr_end + 4:]
+                        break
+                    cl         = int(m.group(1))
+                    data_start = hdr_end + 4
+                    if len(buf) < data_start + cl:
+                        break   # need more data
+                    frame = buf[data_start:data_start + cl]
+                    buf   = buf[data_start + cl:]
+                    if self._active:
+                        self.frame_ready.emit(frame)
+        except Exception as e:
+            if self._active:
+                self.error.emit(str(e))
+
+
+class VideoStreamPanel(QWidget):
+    """MJPEG stream viewer at bottom of panel column; draggable to resize."""
+
+    # Signal emitted from background thread → safely updates combo in main thread
+    _topics_fetched = pyqtSignal(list)
+
+    def __init__(self, video_host: str, parent=None):
+        super().__init__(parent)
+        self._video_host = video_host
+        self._worker     = _MjpegWorker()
+        self._worker.frame_ready.connect(self._on_frame)
+        self._worker.error.connect(self._on_error)
+        self._topics_fetched.connect(self._populate_combo)
+
+        self._build_ui()
+        QTimer.singleShot(800, self._fetch_topics)
+        QTimer.singleShot(1200, lambda: self._change_topic(_DEFAULT_TOPICS[0]))
+
+    # ── build ──────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        self.setMinimumHeight(40)
+        self.setStyleSheet('background:#0f0f1a;')
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 3, 4, 3)
+        lay.setSpacing(3)
+
+        # Header: topic combo + refresh button
+        hdr = QHBoxLayout()
+        hdr.setSpacing(4)
+
+        self._combo = QComboBox()
+        self._combo.setEditable(True)
+        self._combo.setInsertPolicy(QComboBox.NoInsert)
+        for t in _DEFAULT_TOPICS:
+            self._combo.addItem(t)
+        self._combo.setCurrentText(_DEFAULT_TOPICS[0])
+        # Hide native drop-down button — we provide our own ▼ button
+        self._combo.setStyleSheet(
+            'QComboBox{background:#1a1a2e;color:#ccc;border:1px solid #444;'
+            'border-right:none;border-radius:3px 0 0 3px;padding:2px 6px;font-size:11px;}'
+            'QComboBox::drop-down{width:0;border:none;}'
+            'QComboBox QAbstractItemView{background:#1a1a2e;color:#ccc;'
+            'selection-background-color:#2a2a4e;border:1px solid #555;}')
+        self._combo.activated[str].connect(self._change_topic)
+        hdr.addWidget(self._combo, 1)
+
+        _btn_ss = ('QPushButton{background:#252540;color:#aaa;border:1px solid #444;'
+                   'padding:0;font-size:11px;}'
+                   'QPushButton:hover{background:#333366;color:#fff;}')
+
+        arrow_btn = QPushButton('▼')
+        arrow_btn.setFixedSize(18, 22)
+        arrow_btn.setStyleSheet(_btn_ss + 'QPushButton{border-radius:0 3px 3px 0;}')
+        arrow_btn.clicked.connect(self._combo.showPopup)
+        hdr.addWidget(arrow_btn)
+
+        refresh_btn = QPushButton('⟳')
+        refresh_btn.setFixedSize(22, 22)
+        refresh_btn.setToolTip('Refresh topic list from web_video_server')
+        refresh_btn.setStyleSheet(_btn_ss + 'QPushButton{border-radius:3px;margin-left:3px;}')
+        refresh_btn.clicked.connect(self._fetch_topics)
+        hdr.addWidget(refresh_btn)
+
+        lay.addLayout(hdr)
+
+        # Video frame label
+        self._frame_lbl = QLabel('No stream')
+        self._frame_lbl.setAlignment(Qt.AlignCenter)
+        self._frame_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._frame_lbl.setStyleSheet('color:#555;font-size:12px;background:#0a0a14;')
+        self._frame_lbl.setMinimumHeight(20)
+        lay.addWidget(self._frame_lbl, 1)
+
+    # ── topic management ───────────────────────────────────────────────────
+
+    def _base_url(self):
+        ip = self._video_host.split(':')[0]
+        return f'http://{ip}:{_VIDEO_PORT}'
+
+    def _fetch_topics(self):
+        def _run():
+            try:
+                html = urllib.request.urlopen(
+                    self._base_url() + '/', timeout=3).read().decode('utf-8', errors='ignore')
+                topics = sorted(set(_re.findall(r'topic=(/[^"&\s]+)', html)))
+                if topics:
+                    self._topics_fetched.emit(topics)   # safely crosses to main thread
+            except Exception:
+                pass
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _populate_combo(self, topics: list):
+        current = self._combo.currentText()
+        self._combo.blockSignals(True)
+        self._combo.clear()
+        for t in topics:
+            self._combo.addItem(t)
+        idx = self._combo.findText(current)
+        self._combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._combo.blockSignals(False)
+
+    def _change_topic(self, topic: str):
+        if not topic:
+            return
+        url = self._base_url() + f'/stream?topic={topic}&type=mjpeg'
+        self._frame_lbl.setText('Connecting…')
+        self._frame_lbl.setStyleSheet('color:#888;font-size:12px;background:#0a0a14;')
+        self._worker.start_stream(url)
+
+    # ── frame display ──────────────────────────────────────────────────────
+
+    def _on_frame(self, data: bytes):
+        pix = QPixmap()
+        pix.loadFromData(data, 'JPEG')
+        if pix.isNull():
+            return
+        lbl = self._frame_lbl
+        scaled = pix.scaled(lbl.width(), lbl.height(),
+                            Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        lbl.setPixmap(scaled)
+
+    def _on_error(self, msg: str):
+        self._frame_lbl.setText(f'Stream error\n{msg[:60]}')
+        self._frame_lbl.setStyleSheet('color:#e05555;font-size:11px;background:#0a0a14;')
+
+    def set_video_host(self, host: str):
+        """Update host (called when settings change)."""
+        self._video_host = host
+        topic = self._combo.currentText()
+        if topic:
+            self._change_topic(topic)
+
+    def closeEvent(self, event):
+        self._worker.stop_stream()
+        super().closeEvent(event)

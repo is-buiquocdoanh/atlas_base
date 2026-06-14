@@ -14,7 +14,7 @@ from .api_client import AtlasApiClient
 from .panels import (
     NaviModePanel, BuildModePanel, PositionPanel, NaviRoutePanel,
     VirtualWallPanel, SpecialAreaPanel, MapPanel, RobotStatusPanel,
-    LogPanel, SettingsPanel,
+    LogPanel, SettingsPanel, VideoStreamPanel,
 )
 
 _STYLE = """
@@ -312,9 +312,25 @@ class AtlasAppWindow(QMainWindow):
 
         self._current_panel = self._panel_navi
 
-        # ── splitter: panel | map ──
+        # ── video stream panel (bottom of panel column) ──
+        robot_host = self.node.config.settings.get('robot_host', 'localhost:8080')
+        self._video_panel = VideoStreamPanel(video_host=robot_host)
+
+        # vertical splitter: panel stack (top 4/5) + video viewer (bottom 1/5)
+        panel_vsplit = QSplitter(Qt.Vertical)
+        panel_vsplit.addWidget(self._panel_stack)
+        panel_vsplit.addWidget(self._video_panel)
+        panel_vsplit.setStretchFactor(0, 4)
+        panel_vsplit.setStretchFactor(1, 1)
+        panel_vsplit.setSizes([640, 160])
+        panel_vsplit.setCollapsible(0, False)
+        panel_vsplit.setCollapsible(1, True)
+        panel_vsplit.setStyleSheet(
+            'QSplitter::handle{background:#252540;height:5px;}')
+
+        # ── splitter: panel column | map ──
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self._panel_stack)
+        splitter.addWidget(panel_vsplit)
         splitter.addWidget(self.map_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)

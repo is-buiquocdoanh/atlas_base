@@ -75,5 +75,5 @@ def generate_launch_description():
         map_saver,
         start_localization_slam_toolbox_node,
         lifecycle_manager_loc,
-        rviz_node
+        # rviz_node
     ])
