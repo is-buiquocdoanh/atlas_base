@@ -309,6 +309,15 @@ class MapWidget(QWidget):
         qimg = QImage(img.tobytes(), w, h, w * 4, QImage.Format_RGBA8888).copy()
         return qimg, ox, oy, res, w, h
 
+    def center_on_robot(self):
+        """Pan so the robot is in the centre of the visible area."""
+        if self.width() == 0 or self.height() == 0:
+            return
+        rx, ry, _ = self._robot_pose
+        self._pan_x = self.width()  / 2 - rx * self._zoom
+        self._pan_y = self.height() / 2 + ry * self._zoom
+        self.update()
+
     def fit_map(self):
         if not self._map_w:
             return
@@ -635,7 +644,19 @@ class MapWidget(QWidget):
             p.setPen(QPen(QColor(255, 255, 255), 1.5))
             p.drawEllipse(c, r, r)
 
-            # direction shaft
+            # While dragging yaw: dashed extension from robot to mouse cursor
+            if self._pose_drag_mode == 'yaw':
+                mx, my = self._mouse_pos_world
+                mc = self._w2c(mx, my)
+                if math.hypot(mx - px, my - py) > 0.01:
+                    ext = QPen(QColor(80, 220, 140, 140), 1.5, Qt.DashLine)
+                    ext.setDashPattern([10, 6])
+                    p.setPen(ext)
+                    p.setBrush(Qt.NoBrush)
+                    p.drawLine(c.toPoint(), mc.toPoint())
+                    self._draw_arrowhead(p, c, mc, QColor(80, 220, 140, 140), 8)
+
+            # direction shaft (short solid arrow, always shows current yaw)
             tip = QPointF(c.x() + arr * math.cos(-pyaw),
                           c.y() + arr * math.sin(-pyaw))
             p.setPen(QPen(col, 2.5))

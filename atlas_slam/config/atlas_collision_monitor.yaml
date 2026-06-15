@@ -20,14 +20,10 @@ collision_monitor:
     PolygonStop:
       type: "polygon"
       points: [
-        0.0,   0.27,   # Điểm 1: Bên trái robot (90 độ)
-        0.135, 0.234,  # Điểm 2: Góc 60 độ  (0.27 * cos(60), 0.27 * sin(60))
-        0.234, 0.135,  # Điểm 3: Góc 30 độ  (0.27 * cos(30), 0.27 * sin(30))
-        0.27,  0.0,    # Điểm 4: Chính giữa phía trước (0 độ)
-        0.234, -0.135, # Điểm 5: Góc -30 độ (0.27 * cos(-30), 0.27 * sin(-30))
-        0.135, -0.234, # Điểm 6: Góc -60 độ (0.27 * cos(-60), 0.27 * sin(-60))
-        0.0,   -0.27,  # Điểm 7: Bên phải robot (-90 độ)
-        0.0,   0.0     # Điểm 8: Gốc tọa độ để đóng tâm hình tròn
+         0.45,  0.255,  # Trước-trái   (front +5cm, left +5cm)
+        -0.40,  0.255,  # Sau-trái     (rear flush, left +5cm)
+        -0.40, -0.255,  # Sau-phải     (rear flush, right +5cm)
+         0.45, -0.255   # Trước-phải   (front +5cm, right +5cm)
       ]
       action_type: "stop"
       max_points: 3
@@ -36,7 +32,12 @@ collision_monitor:
       enabled: true
     PolygonSlow:
       type: "polygon"
-      points: [0.4, 0.4, 0.4, -0.4, -0.4, -0.4, -0.4, 0.4]
+      points: [
+         0.60,  0.405,  # Trước-trái   (front +20cm, left +20cm)
+        -0.60,  0.405,  # Sau-trái     (rear +20cm, left +20cm)
+        -0.60, -0.405,  # Sau-phải     (rear +20cm, right +20cm)
+         0.60, -0.405   # Trước-phải   (front +20cm, right +20cm)
+      ]
       action_type: "slowdown"
       max_points: 3
       slowdown_ratio: 0.5 

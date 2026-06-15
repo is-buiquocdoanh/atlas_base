@@ -1605,6 +1605,7 @@ class SettingsPanel(QWidget):
         cg = _grp('Robot connection')
         cfl = QFormLayout(); cfl.setSpacing(6)
         self._host = QLineEdit(s.get('robot_host', 'localhost:8080'))
+        self._host.returnPressed.connect(self._save)
         cfl.addRow('Robot host (IP:port):', self._host)
         cg.layout().addLayout(cfl)
         test_btn = QPushButton('Test connection')
@@ -1619,11 +1620,18 @@ class SettingsPanel(QWidget):
         rfl = QFormLayout(); rfl.setSpacing(6)
         self._max_v   = QDoubleSpinBox(); self._max_v.setRange(0.05, 3.0);    self._max_v.setSingleStep(0.05);  self._max_v.setValue(s.get('max_linear', 0.5));     self._max_v.setSuffix(' m/s')
         self._max_w   = QDoubleSpinBox(); self._max_w.setRange(0.1, 6.28);    self._max_w.setSingleStep(0.05);  self._max_w.setValue(s.get('max_angular', 1.0));    self._max_w.setSuffix(' r/s')
-        self._bat_pct = QDoubleSpinBox(); self._bat_pct.setRange(5, 50);      self._bat_pct.setSingleStep(1);   self._bat_pct.setValue(s.get('battery_charge_pct', 20)); self._bat_pct.setSuffix(' %')
+        self._bat_pct = QDoubleSpinBox(); self._bat_pct.setRange(5, 100);     self._bat_pct.setSingleStep(1);   self._bat_pct.setValue(s.get('battery_charge_pct', 20)); self._bat_pct.setSuffix(' %')
+        for _sb in (self._max_v, self._max_w, self._bat_pct):
+            _sb.editingFinished.connect(self._save)
         rfl.addRow('Max linear speed:', self._max_v)
         rfl.addRow('Max angular speed:', self._max_w)
         rfl.addRow('Charge threshold:', self._bat_pct)
         rg.layout().addLayout(rfl)
+        test_charge_btn = _btn('🧪 Test: trigger auto-charge now', '#6a4080')
+        test_charge_btn.setToolTip(
+            'Kích hoạt lệnh về sạc ngay (bỏ qua kiểm tra % pin) — dùng để test')
+        test_charge_btn.clicked.connect(self._test_auto_charge)
+        rg.layout().addWidget(test_charge_btn)
         lay.addWidget(rg)
 
         # nav2
@@ -1632,6 +1640,8 @@ class SettingsPanel(QWidget):
         self._infl   = QDoubleSpinBox(); self._infl.setRange(0.05, 1.0);   self._infl.setSingleStep(0.05); self._infl.setValue(s.get('inflation_radius', 0.3));  self._infl.setSuffix(' m')
         self._xy_tol = QDoubleSpinBox(); self._xy_tol.setRange(0.05, 1.0); self._xy_tol.setSingleStep(0.05); self._xy_tol.setValue(s.get('xy_tolerance', 0.25)); self._xy_tol.setSuffix(' m')
         self._y_tol  = QDoubleSpinBox(); self._y_tol.setRange(0.05, 3.14); self._y_tol.setSingleStep(0.05); self._y_tol.setValue(s.get('yaw_tolerance', 0.2));   self._y_tol.setSuffix(' rad')
+        for _sb in (self._infl, self._xy_tol, self._y_tol):
+            _sb.editingFinished.connect(self._save)
         nfl.addRow('Inflation radius:', self._infl)
         nfl.addRow('XY tolerance:', self._xy_tol)
         nfl.addRow('Yaw tolerance:', self._y_tol)
@@ -1647,6 +1657,7 @@ class SettingsPanel(QWidget):
         dcg = _grp('Charging / Docking')
         dcfl = QFormLayout(); dcfl.setSpacing(6)
         self._charging_pile = QLineEdit(s.get('charging_pile', 'charging_pile'))
+        self._charging_pile.returnPressed.connect(self._save)
         self._dock_method = QComboBox()
         self._dock_method.addItems(['line_follow', 'nav2_waypoint', 'aruco'])
         cur = s.get('dock_method', 'line_follow')
@@ -1674,9 +1685,18 @@ class SettingsPanel(QWidget):
         dg.layout().addLayout(dfl)
         lay.addWidget(dg)
 
-        save_btn = _btn('💾 Save Settings', '#4e6ea0')
+        save_btn = QPushButton('Save Settings')
+        save_btn.setStyleSheet(
+            'QPushButton{'
+            '  background:#4e6ea0;color:#fff;font-weight:bold;'
+            '  border:none;border-radius:4px;padding:6px 14px;'
+            '}'
+            'QPushButton:hover{background:#6080bb;}'
+            'QPushButton:pressed{background:#3a5280;}')
         save_btn.clicked.connect(self._save)
+        self._save_lbl = _lbl('')
         lay.addWidget(save_btn)
+        lay.addWidget(self._save_lbl)
         lay.addStretch()
 
         main = QVBoxLayout(self)
@@ -1732,6 +1752,9 @@ class SettingsPanel(QWidget):
             lambda r: None,
         )
         _log('Settings saved')
+        self._save_lbl.setText('Settings saved')
+        self._save_lbl.setStyleSheet('color:#60c060;font-size:11px;')
+        QTimer.singleShot(3000, lambda: self._save_lbl.setText(''))
 
     def _apply_nav2(self):
         import subprocess, threading
@@ -1794,6 +1817,12 @@ class SettingsPanel(QWidget):
                 f'Applied — {max_v:.2f} m/s  |  {max_w:.2f} r/s  |  infl {infl:.2f} m  |  tol {xy_tol:.2f}/{y_tol:.2f}')
             self._nav2_lbl.setStyleSheet('color:#60c060;font-size:11px;')
         _log(f'Nav2 params: max_v={max_v:.2f} max_w={max_w:.2f} inflation={infl:.2f} xy_tol={xy_tol:.2f}')
+
+    def _test_auto_charge(self):
+        from .node import _log
+        _log('Test: manually triggering auto-charge sequence')
+        self._win._auto_dock_triggered = True
+        self._win._full_charge()
 
     def refresh(self, _node):
         pass

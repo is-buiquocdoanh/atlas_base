@@ -143,6 +143,12 @@ class AtlasAppWindow(QMainWindow):
         # load data from robot API once after startup
         QTimer.singleShot(2000, self._load_from_api)
 
+        # Center view on robot after TF is ready (no map needed)
+        QTimer.singleShot(1500, self.map_widget.center_on_robot)
+
+        # auto-dock flag: prevents re-triggering until battery recovers above threshold
+        self._auto_dock_triggered = False
+
         self._select_sidebar(0)
 
     # ------------------------------------------------------------------ #
@@ -643,6 +649,19 @@ class AtlasAppWindow(QMainWindow):
         self._sb_bat.setText(f'Battery: {bat:.0f}%' if bat >= 0 else 'Battery: —')
         self._sb_nav.setText(f'Nav: {nav}')
         self._sb_pose.setText(f'X:{x:.2f} Y:{y:.2f} θ:{math.degrees(yaw):.0f}°')
+
+        # auto-charge: trigger when battery drops below threshold.
+        # Reset flag only after battery climbs threshold+10% to prevent oscillation
+        # when readings fluctuate near the threshold while docking/charging.
+        threshold = self.node.config.settings.get('battery_charge_pct', 20.0)
+        if bat >= 0 and bat >= min(threshold + 10.0, 100.0):
+            self._auto_dock_triggered = False
+        elif bat >= 0 and bat < threshold and not self._auto_dock_triggered \
+                and nav in ('idle', 'succeeded', 'failed'):
+            self._auto_dock_triggered = True
+            from .node import _log
+            _log(f'Battery {bat:.0f}% < threshold {threshold:.0f}% — auto charge')
+            self._full_charge()
 
         # launch status overlay on map (merged local + API — node.get_launch_status() does the merge)
         self.map_widget.update_launch_status(self.node.get_launch_status())
