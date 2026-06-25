@@ -1,0 +1,64 @@
+map_server:
+  ros__parameters:
+    yaml_filename: ""
+
+map_saver:
+  ros__parameters:
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+amcl:
+  ros__parameters:
+    # === Motion model: Differential cho robot 2 bánh ===
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+    alpha1: 0.1    # noise quay-do-quay
+    alpha2: 0.1    # noise quay-do-tiến
+    alpha3: 0.1    # noise tiến-do-tiến
+    alpha4: 0.1    # noise tiến-do-quay
+    alpha5: 0.1    # không dùng cho differential, giữ mặc định
+
+    # === Frame config ===
+    base_frame_id: "base_link"
+    global_frame_id: "map"
+    odom_frame_id: "odom"
+    tf_broadcast: true
+    transform_tolerance: 0.5
+
+    # === Laser config — RPLidar A2M12 ===
+    scan_topic: /atlas/scan_filtered
+    laser_model_type: "likelihood_field"
+    laser_min_range: 0.15      # A2M12 min range
+    laser_max_range: 12.0      # A2M12 max range ~12m
+    laser_likelihood_max_dist: 2.0
+    max_beams: 120             # A2M12 ~800 point/scan
+    sigma_hit: 0.15            # A2M12 độ chính xác tốt
+
+    # === Beam skip ===
+    do_beamskip: true
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+
+    # === Particle filter ===
+    min_particles: 500
+    max_particles: 2000
+    pf_err: 0.05
+    pf_z: 0.99
+    resample_interval: 1
+    recovery_alpha_fast: 0.1
+    recovery_alpha_slow: 0.001
+
+    # === Update triggers ===
+    update_min_a: 0.1          # update khi quay ~6°
+    update_min_d: 0.1          # update khi đi 10cm
+
+    # === Sensor weights ===
+    z_hit: 0.7
+    z_max: 0.05
+    z_rand: 0.2
+    z_short: 0.05
+    lambda_short: 0.1
+
+    save_pose_rate: 0.5

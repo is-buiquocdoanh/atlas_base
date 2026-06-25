@@ -17,7 +17,7 @@ def generate_launch_description():
 
     map_yaml_arg = DeclareLaunchArgument(
         'map',
-        default_value=os.path.join(maps_dir, 'ware_house', 'warehouse.yaml'),
+        default_value=os.path.join(maps_dir, 'map7', 'map7.yaml'),
         description='Full path to the YAML map file to load'
     )
 
@@ -48,6 +48,15 @@ def generate_launch_description():
         remappings=[('/map', '/map')],
         output='screen'
     )
+    
+    # AMCL
+    amcl = Node(
+        package='nav2_amcl',
+        executable='amcl',
+        name='amcl',
+        output='screen',
+        parameters=[params_file, {'use_sim_time': USE_SIM_TIME}]
+    )
 
     lifecycle_manager_loc = Node(
         package='nav2_lifecycle_manager',
@@ -57,7 +66,11 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': USE_SIM_TIME,
             'autostart': True,
-            'node_names': ['map_server', 'map_saver']
+            'node_names': [
+                'map_server',
+                'map_saver',
+                'amcl'
+            ]
         }]
     )
 
@@ -73,7 +86,8 @@ def generate_launch_description():
         map_yaml_arg,
         map_server,
         map_saver,
-        start_localization_slam_toolbox_node,
+        amcl,
+        # start_localization_slam_toolbox_node,
         lifecycle_manager_loc,
-        # rviz_node
+        rviz_node
     ])
